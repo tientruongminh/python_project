@@ -141,12 +141,14 @@ class WalmartScraper(BaseScraper):
         soup = BeautifulSoup(page_source, 'html.parser')
         data = {}
         
-        # Extract title
+        # Extract title - user provided selector first
         title_selectors = [
+            '.normal.dark-gray.mb0.lh-title.lh-copy-m.f3-m.f6',  # User provided
             'h1[itemprop="name"]',
             'h1.prod-ProductTitle',
             'h1[data-automation-id="product-title"]',
-            'h1.lh-copy'
+            'h1.lh-copy',
+            'span.lh-title'
         ]
         
         for selector in title_selectors:
@@ -155,11 +157,13 @@ class WalmartScraper(BaseScraper):
                 data['title'] = clean_text(element.get_text())
                 break
                 
-        # Extract rating
+        # Extract rating - user provided selector first
         rating_selectors = [
+            '.w-30',  # User provided
             'span[itemprop="ratingValue"]',
             'span.rating-number',
-            'span[data-automation-id="product-rating"]'
+            'span[data-automation-id="product-rating"]',
+            'span.w_iUH7'  # Common Walmart rating class
         ]
         
         for selector in rating_selectors:
