@@ -417,6 +417,127 @@ class DataImputer:
         return self.df
         
     # ================================================================
+    # GEMINI URL CONTEXT SCRAPING
+    # ================================================================
+    
+    def impute_with_gemini_url(
+        self,
+        max_urls: Optional[int] = None,
+        columns_to_fill: List[str] = None,
+        progress_callback = None
+    ) -> pd.DataFrame:
+        """
+        Fill missing values bằng Gemini URL Context API.
+        
+        Đây là phương pháp nhanh và ổn định hơn Selenium.
+        
+        Args:
+            max_urls: Maximum URLs to process
+            columns_to_fill: Columns to fill (default: title, star distributions)
+            progress_callback: Optional callback(current, total, url)
+            
+        Returns:
+            DataFrame with filled values
+        """
+        logger.info("Imputing with Gemini URL Context API...")
+        
+        if columns_to_fill is None:
+            columns_to_fill = ['title', 'five_star', 'four_star', 'three_star', 
+                              'two_star', 'one_star']
+        
+        # Initialize scraper
+        try:
+            from src.scrapers.gemini_url_scraper import GeminiURLScraper
+            scraper = GeminiURLScraper()
+            
+            if not scraper.is_available:
+                logger.error("Gemini URL Scraper không khả dụng")
+                return self.df
+                
+        except ImportError as e:
+            logger.error(f"Không thể import GeminiURLScraper: {e}")
+            return self.df
+        
+        # Find URLs with missing data
+        url_col = 'pageurl' if 'pageurl' in self.df.columns else 'url'
+        if url_col not in self.df.columns:
+            logger.warning("Không tìm thấy cột URL")
+            return self.df
+        
+        # Get unique URLs where title is missing
+        if 'title' in columns_to_fill and 'title' in self.df.columns:
+            missing_mask = self.df['title'].isna()
+        else:
+            # Or where any star column is missing
+            star_cols = [c for c in columns_to_fill if 'star' in c and c in self.df.columns]
+            if star_cols:
+                missing_mask = self.df[star_cols[0]].isna()
+            else:
+                logger.info("Không có columns cần fill")
+                return self.df
+        
+        urls_to_process = self.df.loc[missing_mask, url_col].dropna().unique().tolist()
+        
+        # Filter out invalid URLs
+        urls_to_process = [u for u in urls_to_process if u not in self.invalid_urls]
+        
+        if max_urls:
+            urls_to_process = urls_to_process[:max_urls]
+        
+        if not urls_to_process:
+            logger.info("Không có URLs cần process")
+            return self.df
+        
+        logger.info(f"Processing {len(urls_to_process)} URLs với Gemini...")
+        
+        # Process URLs
+        results = {}
+        total = len(urls_to_process)
+        
+        for i, url in enumerate(urls_to_process):
+            if progress_callback:
+                progress_callback(i + 1, total, url)
+            
+            result = scraper.scrape_product(url)
+            
+            if result.error:
+                logger.debug(f"Error scraping {url}: {result.error}")
+                self.invalid_urls.append(url)
+            else:
+                results[url] = result
+            
+            if (i + 1) % 50 == 0:
+                logger.info(f"Progress: {i + 1}/{total} ({len(results)} successful)")
+        
+        logger.info(f"Scraped {len(results)}/{total} URLs successfully")
+        
+        # Apply results to DataFrame
+        filled_count = 0
+        
+        for url, product_info in results.items():
+            mask = self.df[url_col] == url
+            
+            if 'title' in columns_to_fill and product_info.title:
+                self.df.loc[mask & self.df['title'].isna(), 'title'] = product_info.title
+                filled_count += mask.sum()
+            
+            # Star distributions
+            if 'five_star' in columns_to_fill and product_info.five_star_pct is not None:
+                self.df.loc[mask & self.df['five_star'].isna(), 'five_star'] = product_info.five_star_pct
+            if 'four_star' in columns_to_fill and product_info.four_star_pct is not None:
+                self.df.loc[mask & self.df['four_star'].isna(), 'four_star'] = product_info.four_star_pct
+            if 'three_star' in columns_to_fill and product_info.three_star_pct is not None:
+                self.df.loc[mask & self.df['three_star'].isna(), 'three_star'] = product_info.three_star_pct
+            if 'two_star' in columns_to_fill and product_info.two_star_pct is not None:
+                self.df.loc[mask & self.df['two_star'].isna(), 'two_star'] = product_info.two_star_pct
+            if 'one_star' in columns_to_fill and product_info.one_star_pct is not None:
+                self.df.loc[mask & self.df['one_star'].isna(), 'one_star'] = product_info.one_star_pct
+        
+        logger.info(f"Filled {filled_count} rows with scraped data")
+        
+        return self.df
+        
+    # ================================================================
     # REPORTING
     # ================================================================
         
@@ -447,3 +568,4 @@ class DataImputer:
     def get_invalid_urls(self) -> List[str]:
         """Get list of invalid URLs found during validation."""
         return self.invalid_urls
+
