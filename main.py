@@ -253,12 +253,37 @@ class AnalysisPipeline:
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='Walmart Product Review Analysis Pipeline'
+        description='Walmart Product Review Analysis Pipeline',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Chạy full pipeline
+  python main.py
+  
+  # Chạy nhanh (bỏ qua preprocessing nếu đã có data)
+  python main.py --fast
+  
+  # Chỉ chạy report từ data đã có
+  python main.py --step report
+  
+  # Chạy từ bước analyze (đã có clustered data)
+  python main.py --start-from analyze
+"""
     )
     parser.add_argument(
         '--step',
         choices=['load', 'preprocess', 'scrape', 'cluster', 'analyze', 'report'],
-        help='Run specific step only'
+        help='Chạy một bước cụ thể'
+    )
+    parser.add_argument(
+        '--start-from',
+        choices=['load', 'preprocess', 'scrape', 'cluster', 'analyze', 'report'],
+        help='Bắt đầu từ bước này (bỏ qua các bước trước)'
+    )
+    parser.add_argument(
+        '--fast',
+        action='store_true',
+        help='Chạy nhanh: bỏ qua preprocessing nếu đã có processed_data.csv'
     )
     parser.add_argument(
         '--scrape',
@@ -281,18 +306,61 @@ def main():
     
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-        
+    
     logger.info("Starting Walmart Review Analysis Pipeline")
     logger.info(f"Configuration: {args}")
     
     pipeline = AnalysisPipeline()
     
+    # Fast mode: check if processed data exists
+    if args.fast:
+        processed_path = settings.processed_data_path
+        clustered_path = settings.clustered_data_path
+        
+        if clustered_path.exists():
+            logger.info("FAST MODE: Đã có clustered_data.csv, bắt đầu từ analyze")
+            args.start_from = 'analyze'
+        elif processed_path.exists():
+            logger.info("FAST MODE: Đã có processed_data.csv, bắt đầu từ cluster")
+            args.start_from = 'cluster'
+        else:
+            logger.info("FAST MODE: Chưa có data, chạy full pipeline")
+    
+    # Determine step(s) to run
+    run_step = args.step
+    start_from = args.start_from
+    
     try:
-        df = pipeline.run(
-            step=args.step,
-            use_scraping=args.scrape,
-            max_scrape_urls=args.max_scrape_urls
-        )
+        if start_from:
+            # Run from specific step
+            steps = ['load', 'preprocess', 'scrape', 'cluster', 'analyze', 'report']
+            start_idx = steps.index(start_from)
+            
+            # Load saved data first
+            pipeline._load_saved_data()
+            
+            # Run remaining steps
+            for s in steps[start_idx:]:
+                if s == 'load':
+                    pipeline._step_load()
+                elif s == 'preprocess':
+                    pipeline._step_preprocess()
+                elif s == 'scrape':
+                    pipeline._step_scrape(args.scrape, args.max_scrape_urls)
+                elif s == 'cluster':
+                    pipeline._step_cluster()
+                elif s == 'analyze':
+                    pipeline._step_analyze()
+                elif s == 'report':
+                    pipeline._step_report()
+            
+            df = pipeline.df
+        else:
+            df = pipeline.run(
+                step=run_step,
+                use_scraping=args.scrape,
+                max_scrape_urls=args.max_scrape_urls
+            )
         
         logger.info("=" * 50)
         logger.info("PIPELINE COMPLETED SUCCESSFULLY")
@@ -307,3 +375,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

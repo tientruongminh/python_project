@@ -6,50 +6,88 @@ Phương pháp:
 - Case 2: Nhập sản phẩm + tên khía cạnh -> embedding similarity -> trace reviews -> summarize
 
 Không sử dụng rule-based, hoàn toàn dựa trên semantic embeddings.
+
+OPTIMIZATIONS:
+- Caching embeddings to disk
+- Batch processing với progress bar
+- FastMode với smaller model
 """
 from __future__ import annotations
 
 import logging
+import hashlib
+import pickle
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# Cache directory
+CACHE_DIR = Path(__file__).parent.parent.parent / "outputs" / ".cache"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
 
 class EmbeddingAspectSummarizer:
     """
     Tóm tắt theo khía cạnh sử dụng Embeddings và Clustering.
     
+    OPTIMIZATIONS:
+    - Caching embeddings to disk (không cần tính lại)
+    - Batch encoding với parallel processing
+    - FastMode sử dụng model nhỏ hơn
+    
     Workflow Case 1 (Số khía cạnh):
     1. Lọc reviews theo sản phẩm/category
-    2. Tạo embeddings cho tất cả reviews
-    3. Giảm chiều bằng UMAP
+    2. Tạo embeddings cho tất cả reviews (CACHED)
+    3. Giảm chiều bằng UMAP/PCA
     4. Gom cụm bằng KMeans với k = số khía cạnh mong muốn
     5. Đặt tên cho từng cluster bằng LLM
-    6. Trace lại các câu thuộc từng khía cạnh
-    7. Summarize từng khía cạnh bằng LLM
+    6. Summarize từng khía cạnh bằng LLM
     
     Workflow Case 2 (Tên khía cạnh):
-    1. Lọc reviews theo sản phẩm/category
-    2. Tạo embeddings cho reviews và tên khía cạnh
-    3. Tính similarity giữa reviews và khía cạnh
-    4. Lọc reviews có similarity cao
-    5. Summarize các reviews đó bằng LLM
+    1. Lọc reviews theo sản phẩm/category  
+    2. Tạo embeddings (CACHED)
+    3. Tính similarity
+    4. Summarize
     """
     
-    def __init__(self, df: pd.DataFrame, model_name: str = 'all-MiniLM-L6-v2'):
+    # Model options: faster to slower
+    MODEL_OPTIONS = {
+        'fast': 'all-MiniLM-L6-v2',      # 384 dim, fastest
+        'balanced': 'paraphrase-MiniLM-L3-v2',  # 384 dim, fast
+        'accurate': 'all-mpnet-base-v2',  # 768 dim, accurate but slow
+    }
+    
+    def __init__(
+        self, 
+        df: pd.DataFrame, 
+        model_name: str = 'all-MiniLM-L6-v2',
+        fast_mode: bool = True,
+        use_cache: bool = True
+    ):
         """
         Khởi tạo EmbeddingAspectSummarizer.
         
         Args:
             df: DataFrame chứa reviews
             model_name: Tên model sentence-transformers
+            fast_mode: Sử dụng model nhanh hơn
+            use_cache: Cache embeddings vào disk
         """
         self.df = df.copy()
-        self.model_name = model_name
+        self.use_cache = use_cache
+        
+        # Chọn model dựa trên fast_mode
+        if fast_mode:
+            self.model_name = self.MODEL_OPTIONS['fast']
+        else:
+            self.model_name = model_name
+            
         self.embedding_model = None
         self.gemini_client = None
+        self._embeddings_cache = {}  # In-memory cache
         
         self._init_models()
         
@@ -58,8 +96,9 @@ class EmbeddingAspectSummarizer:
         # Sentence Transformers
         try:
             from sentence_transformers import SentenceTransformer
+            logger.info(f"Đang tải embedding model: {self.model_name}...")
             self.embedding_model = SentenceTransformer(self.model_name)
-            logger.info(f"Đã tải embedding model: {self.model_name}")
+            logger.info(f"Đã tải xong embedding model!")
         except ImportError:
             logger.error("Cần cài đặt: pip install sentence-transformers")
         except Exception as e:
@@ -75,6 +114,39 @@ class EmbeddingAspectSummarizer:
         except Exception as e:
             logger.warning(f"Không thể khởi tạo Gemini: {e}")
             self.gemini_client = None
+    
+    def _get_cache_key(self, texts: List[str]) -> str:
+        """Tạo cache key từ danh sách texts."""
+        content = ''.join(sorted(texts[:100]))  # Chỉ dùng 100 đầu tiên cho key
+        return hashlib.md5(f"{content}_{self.model_name}".encode()).hexdigest()
+    
+    def _load_embeddings_from_cache(self, cache_key: str) -> Optional[np.ndarray]:
+        """Load embeddings từ disk cache."""
+        if not self.use_cache:
+            return None
+            
+        cache_path = CACHE_DIR / f"embeddings_{cache_key}.pkl"
+        if cache_path.exists():
+            try:
+                with open(cache_path, 'rb') as f:
+                    logger.info(f"Đang load embeddings từ cache...")
+                    return pickle.load(f)
+            except Exception as e:
+                logger.warning(f"Không thể load cache: {e}")
+        return None
+    
+    def _save_embeddings_to_cache(self, cache_key: str, embeddings: np.ndarray) -> None:
+        """Save embeddings vào disk cache."""
+        if not self.use_cache:
+            return
+            
+        cache_path = CACHE_DIR / f"embeddings_{cache_key}.pkl"
+        try:
+            with open(cache_path, 'wb') as f:
+                pickle.dump(embeddings, f)
+            logger.info(f"Đã cache embeddings ({embeddings.shape})")
+        except Exception as e:
+            logger.warning(f"Không thể save cache: {e}")
     
     def _get_reviews_for_product(
         self, 
@@ -115,24 +187,38 @@ class EmbeddingAspectSummarizer:
             
         return df
     
-    def _create_embeddings(self, texts: List[str]) -> np.ndarray:
+    def _create_embeddings(self, texts: List[str], batch_size: int = 64) -> np.ndarray:
         """
-        Tạo embeddings cho danh sách văn bản.
+        Tạo embeddings cho danh sách văn bản với caching.
         
         Args:
             texts: Danh sách văn bản
+            batch_size: Số texts xử lý mỗi batch (tăng nếu có GPU)
             
         Returns:
             Ma trận embeddings (n_texts, embedding_dim)
         """
         if self.embedding_model is None:
-            raise ValueError("Embedding model chưa được khởi tạo")
-            
+            raise ValueError("Embedding model chưa được khởi tạo. Cài đặt: pip install sentence-transformers")
+        
+        # Check cache
+        cache_key = self._get_cache_key(texts)
+        cached = self._load_embeddings_from_cache(cache_key)
+        if cached is not None and len(cached) == len(texts):
+            return cached
+        
+        # Create embeddings với batch processing
+        logger.info(f"Đang tạo embeddings cho {len(texts)} texts (batch_size={batch_size})...")
         embeddings = self.embedding_model.encode(
             texts, 
             show_progress_bar=True,
-            convert_to_numpy=True
+            convert_to_numpy=True,
+            batch_size=batch_size
         )
+        
+        # Save to cache
+        self._save_embeddings_to_cache(cache_key, embeddings)
+        
         return embeddings
     
     def _reduce_dimensions(self, embeddings: np.ndarray, n_components: int = 5) -> np.ndarray:
