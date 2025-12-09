@@ -8,9 +8,12 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-# Load .env file
-from dotenv import load_dotenv
-load_dotenv()
+# Load .env file (optional - for local development)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not required, use environment variables directly
 
 # Project paths
 PROJECT_ROOT = Path(__file__).parent.parent.parent
