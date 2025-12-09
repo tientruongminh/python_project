@@ -17,7 +17,14 @@ import pandas as pd
 from tqdm import tqdm
 
 from src.config.settings import settings
-from src.scrapers.walmart_scraper import WalmartScraper
+
+# Optional import for Selenium scraper
+try:
+    from src.scrapers.walmart_scraper import WalmartScraper
+    SELENIUM_AVAILABLE = True
+except ImportError:
+    WalmartScraper = None
+    SELENIUM_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 

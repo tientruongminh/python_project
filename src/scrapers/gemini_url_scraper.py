@@ -59,14 +59,15 @@ class GeminiURLScraper:
     Lưu ý:
     - Cần API key trong GEMINI_API_KEY environment variable
     - Có giới hạn quota
+    - URL Context chỉ support model gemini-2.5-flash
     """
     
-    def __init__(self, model: str = "gemini-2.0-flash"):
+    def __init__(self, model: str = "gemini-2.5-flash"):
         """
         Khởi tạo scraper.
         
         Args:
-            model: Gemini model name
+            model: Gemini model name (phải là gemini-2.5-flash cho URL Context)
         """
         self.model = model
         self.client = None
@@ -133,8 +134,8 @@ class GeminiURLScraper:
         
         self._rate_limit()
         
-        prompt = """Analyze this Walmart product page and extract the following information in JSON format:
-{
+        prompt = f"""Analyze this Walmart product page at {url} and extract the following information in JSON format:
+{{
     "title": "Product title",
     "rating": 4.5,
     "review_count": 1234,
@@ -145,7 +146,7 @@ class GeminiURLScraper:
     "two_star_pct": 4,
     "one_star_pct": 3,
     "description": "Brief product description"
-}
+}}
 
 If any field is not available, use null.
 Return ONLY the JSON object, no other text."""
@@ -154,15 +155,12 @@ Return ONLY the JSON object, no other text."""
             try:
                 from google.genai.types import GenerateContentConfig
                 
+                # Correct syntax: use tools parameter with url_context tool
                 response = self.client.models.generate_content(
                     model=self.model,
-                    contents=[prompt],
+                    contents=prompt,
                     config=GenerateContentConfig(
-                        tool_config={
-                            "url_context": {
-                                "urls": [url]
-                            }
-                        }
+                        tools=[{"url_context": {}}],
                     )
                 )
                 
