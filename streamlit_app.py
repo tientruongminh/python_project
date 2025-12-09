@@ -119,7 +119,7 @@ def render_sidebar():
     
     page = st.sidebar.radio(
         "Select Page",
-        ["Bao Cao Du An", "Chatbot"],
+        ["Bao Cao Du An", "Phan Tich Khia Canh", "Danh Gia Mo Hinh"],
         label_visibility="collapsed"
     )
     
@@ -127,7 +127,7 @@ def render_sidebar():
     st.sidebar.markdown("### Thong Tin")
     st.sidebar.markdown(
         "He thong phan tich danh gia san pham Walmart "
-        "su dung BERTopic va LLM (Gemini)."
+        "su dung Embeddings, Clustering va LLM (Gemini)."
     )
     
     return page
@@ -831,6 +831,247 @@ def display_case2_result(result):
         st.info("Không tìm thấy reviews liên quan.")
 
 
+# ============================================================
+# MODEL EVALUATION PAGE
+# ============================================================
+
+def render_evaluation(df, summarizer):
+    """Render model evaluation page."""
+    st.markdown('<div class="main-header">Đánh Giá Chất Lượng Mô Hình</div>', unsafe_allow_html=True)
+    
+    st.markdown("""
+    Trang này cho phép đánh giá chất lượng của mô hình Aspect-Based Summarization.
+    
+    **Các nhóm metrics:**
+    1. **Clustering Quality**: Silhouette Score, Calinski-Harabasz, Davies-Bouldin
+    2. **Topic Coherence**: Semantic similarity trong từng cluster
+    3. **Coverage**: Tỷ lệ reviews được gán aspect
+    4. **Summary Quality**: Relevance của summary với source reviews
+    """)
+    
+    st.markdown("---")
+    
+    # Input parameters
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        categories = ['Electronics - Headphones', 'Electronics - TV']
+        if 'product_category' in df.columns:
+            cats = df['product_category'].dropna().unique().tolist()
+            cats = [c for c in cats if c not in ['Unknown', 'Other'] and len(df[df['product_category'] == c]) >= 50]
+            if cats:
+                categories = sorted(cats)[:20]  # Top 20 categories
+        
+        selected_category = st.selectbox(
+            "Chọn danh mục để đánh giá:", 
+            categories,
+            key="eval_category"
+        )
+    
+    with col2:
+        n_aspects = st.number_input(
+            "Số khía cạnh (clusters):",
+            min_value=2,
+            max_value=10,
+            value=3,
+            key="eval_n_aspects"
+        )
+    
+    if st.button("Chạy Đánh Giá", type="primary", key="run_eval"):
+        with st.spinner("Đang đánh giá mô hình... (có thể mất 1-2 phút)"):
+            try:
+                from src.analysis.evaluator import AspectModelEvaluator
+                from src.analysis.aspect_summarizer import EmbeddingAspectSummarizer
+                
+                # Create summarizer
+                emb_summarizer = EmbeddingAspectSummarizer(df, fast_mode=True, use_cache=True)
+                
+                # Run analysis
+                result = emb_summarizer.analyze_by_num_aspects(
+                    n_aspects=int(n_aspects),
+                    category=selected_category,
+                    max_reviews=200
+                )
+                
+                if not result.get('success'):
+                    st.error(result.get('error', 'Phân tích thất bại'))
+                    return
+                
+                # Get data for evaluation
+                filtered_df = emb_summarizer._get_reviews_for_product(category=selected_category, max_reviews=200)
+                reviews = filtered_df['review'].tolist()
+                
+                if len(reviews) < n_aspects:
+                    st.error(f"Không đủ reviews ({len(reviews)})")
+                    return
+                
+                embeddings = emb_summarizer._create_embeddings(reviews)
+                reduced = emb_summarizer._reduce_dimensions(embeddings)
+                labels = emb_summarizer._cluster_embeddings(reduced, int(n_aspects))
+                
+                # Build clusters and summaries dicts
+                clusters = {}
+                summaries = {}
+                for i, label in enumerate(labels):
+                    if label not in clusters:
+                        clusters[label] = []
+                    clusters[label].append(reviews[i])
+                
+                for aspect in result['aspects']:
+                    cluster_id = aspect['aspect_id'] - 1
+                    summaries[cluster_id] = aspect['summary']
+                
+                # Run evaluation
+                evaluator = AspectModelEvaluator(emb_summarizer.embedding_model)
+                evaluation = evaluator.run_full_evaluation(
+                    embeddings=reduced,
+                    labels=labels,
+                    clusters=clusters,
+                    summaries=summaries,
+                    total_reviews=len(reviews)
+                )
+                
+                # Display results
+                display_evaluation_results(evaluation, result)
+                
+            except ImportError as e:
+                st.error(f"Thiếu dependencies: {e}")
+                st.info("Cài đặt: pip install sentence-transformers scikit-learn")
+            except Exception as e:
+                st.error(f"Lỗi: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
+
+
+def display_evaluation_results(evaluation: dict, analysis_result: dict):
+    """Display evaluation results."""
+    st.markdown("---")
+    st.markdown("## Kết Quả Đánh Giá")
+    
+    # Overall Score
+    overall = evaluation.get('overall_assessment', {})
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        score = overall.get('overall_score', 0)
+        st.metric("Overall Score", f"{score:.1%}")
+    with col2:
+        st.metric("Grade", overall.get('grade', 'N/A'))
+    with col3:
+        st.metric("Tổng Reviews", evaluation.get('coverage', {}).get('total_reviews', 0))
+    
+    st.markdown("---")
+    
+    # Component scores
+    st.markdown("### Điểm Theo Thành Phần")
+    
+    components = overall.get('components', {})
+    comp_df = pd.DataFrame([
+        {'Thành phần': k.capitalize(), 'Điểm': f"{v:.1%}"}
+        for k, v in components.items()
+    ])
+    st.dataframe(comp_df, use_container_width=True, hide_index=True)
+    
+    st.markdown("---")
+    
+    # Detailed metrics
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### 1. Clustering Quality")
+        cluster = evaluation.get('clustering_quality', {})
+        st.markdown(f"""
+        - **Silhouette Score**: {cluster.get('silhouette_score', 0):.4f}
+          - {cluster.get('silhouette_interpretation', 'N/A')}
+        - **Calinski-Harabasz**: {cluster.get('calinski_harabasz', 0):.2f}
+        - **Davies-Bouldin**: {cluster.get('davies_bouldin', 0):.4f}
+          - {cluster.get('davies_interpretation', 'N/A')}
+        """)
+        
+        st.markdown("### 2. Topic Coherence")
+        coherence = evaluation.get('topic_coherence', {})
+        st.markdown(f"""
+        - **Overall Coherence**: {coherence.get('overall_coherence', 0):.4f}
+        - **Interpretation**: {coherence.get('interpretation', 'N/A')}
+        """)
+    
+    with col2:
+        st.markdown("### 3. Coverage")
+        coverage = evaluation.get('coverage', {})
+        st.markdown(f"""
+        - **Tổng reviews**: {coverage.get('total_reviews', 0):,}
+        - **Reviews có aspect**: {coverage.get('reviews_with_aspects', 0):,}
+        - **Coverage Rate**: {coverage.get('coverage_rate', 0):.1f}%
+        - **Interpretation**: {coverage.get('coverage_interpretation', 'N/A')}
+        """)
+        
+        if coverage.get('cluster_balance'):
+            balance = coverage['cluster_balance']
+            st.markdown(f"""
+            **Cluster Balance:**
+            - Min: {balance.get('min_size', 0)}, Max: {balance.get('max_size', 0)}
+            - CV: {balance.get('coefficient_of_variation', 0):.3f}
+            - {balance.get('balance_interpretation', 'N/A')}
+            """)
+        
+        st.markdown("### 4. Summary Quality")
+        summary = evaluation.get('summary_quality', {})
+        st.markdown(f"""
+        - **Avg Relevance**: {summary.get('avg_relevance', 0):.4f}
+        - **Summaries evaluated**: {summary.get('n_summaries_evaluated', 0)}
+        """)
+    
+    st.markdown("---")
+    
+    # Interpretation
+    st.markdown("### Giải Thích Metrics")
+    
+    with st.expander("Xem chi tiết về các metrics"):
+        st.markdown("""
+        #### Clustering Quality
+        
+        | Metric | Ý nghĩa | Giá trị tốt |
+        |--------|---------|-------------|
+        | Silhouette Score | Độ tách biệt giữa clusters | ≥ 0.5 |
+        | Calinski-Harabasz | Tỷ lệ variance between/within | Càng cao càng tốt |
+        | Davies-Bouldin | Độ overlap giữa clusters | ≤ 1.0 |
+        
+        #### Topic Coherence
+        
+        Đo lường độ mạch lạc của các topics/aspects được phát hiện.
+        - **> 0.6**: Rất tốt - Topics rõ ràng, mạch lạc
+        - **0.4-0.6**: Tốt - Topics có ý nghĩa
+        - **0.25-0.4**: Trung bình - Có overlap
+        - **< 0.25**: Yếu - Topics không rõ ràng
+        
+        #### Coverage
+        
+        Tỷ lệ reviews được gán vào ít nhất 1 aspect.
+        - **> 70%**: Tốt
+        - **40-70%**: Trung bình
+        - **< 40%**: Yếu
+        
+        #### Summary Quality
+        
+        Độ liên quan giữa summary và source reviews.
+        - **> 0.7**: Rất tốt
+        - **0.5-0.7**: Tốt
+        - **0.3-0.5**: Trung bình
+        - **< 0.3**: Yếu
+        """)
+    
+    # Aspects found
+    st.markdown("---")
+    st.markdown("### Các Khía Cạnh Được Phát Hiện")
+    
+    for aspect in analysis_result.get('aspects', []):
+        with st.expander(f"Khía cạnh {aspect['aspect_id']}: {aspect['aspect_name']} ({aspect['review_count']} reviews)"):
+            st.markdown(f"**Tóm tắt:** {aspect['summary']}")
+            st.markdown("**Sample reviews:**")
+            for i, rev in enumerate(aspect.get('sample_reviews', [])[:3], 1):
+                st.markdown(f"{i}. {rev[:200]}...")
+
+
 def main():
     """Main application."""
     df = load_data()
@@ -845,10 +1086,11 @@ def main():
     
     if page == "Bao Cao Du An":
         render_project_report(df)
-    else:
+    elif page == "Phan Tich Khia Canh":
         render_chatbot(df, summarizer)
+    elif page == "Danh Gia Mo Hinh":
+        render_evaluation(df, summarizer)
 
 
 if __name__ == "__main__":
     main()
-
