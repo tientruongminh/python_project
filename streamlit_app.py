@@ -523,200 +523,312 @@ def render_section6_conclusions(df):
 
 
 # ============================================================
-# CHATBOT PAGE
+# CHATBOT PAGE - EMBEDDING-BASED ASPECT ANALYSIS
 # ============================================================
 
 def render_chatbot(df, summarizer):
-    """Render Gemini-powered chatbot."""
-    st.markdown('<div class="main-header">Chatbot Phan Tich Danh Gia</div>', unsafe_allow_html=True)
+    """Render giao diện phân tích khía cạnh với Embeddings."""
+    st.markdown('<div class="main-header">Phân Tích Khía Cạnh Đánh Giá Sản Phẩm</div>', unsafe_allow_html=True)
     
     st.markdown("""
-    Chatbot su dung Gemini AI de tra loi cau hoi ve danh gia san pham.
+    Hệ thống sử dụng **Sentence Embeddings + Clustering** để phân tích khía cạnh từ các đánh giá.
+    Không sử dụng rule-based, hoàn toàn dựa trên ngữ nghĩa (semantic).
     
-    **Cac cau hoi mau:**
-    - "Nguoi dung nói gi ve chat luong san pham?"
-    - "3 khia canh pho bien nhat cua Electronics - Headphones la gi?"
-    - "Sound quality duoc danh gia nhu the nao?"
+    **Quy trình:**
+    1. Lọc reviews theo sản phẩm/danh mục
+    2. Tạo embeddings bằng Sentence Transformers
+    3. Giảm chiều bằng UMAP
+    4. Gom cụm bằng KMeans
+    5. Đặt tên và tóm tắt bằng Gemini LLM
     """)
     
-    # Initialize chat history
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    st.markdown("---")
     
-    # Display chat history
-    for message in st.session_state.messages:
-        role_class = "user-message" if message["role"] == "user" else "bot-message"
-        st.markdown(f'<div class="{role_class}">{message["content"]}</div>', unsafe_allow_html=True)
+    # Chọn mode
+    mode = st.radio(
+        "Chọn chế độ phân tích:",
+        ["Case 1: Phát hiện N khía cạnh phổ biến", "Case 2: Phân tích theo tên khía cạnh"],
+        horizontal=True
+    )
     
-    # Chat input
-    user_input = st.chat_input("Nhap cau hoi cua ban...")
+    st.markdown("---")
     
-    if user_input:
-        # Add user message
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        st.markdown(f'<div class="user-message">{user_input}</div>', unsafe_allow_html=True)
+    if mode == "Case 1: Phát hiện N khía cạnh phổ biến":
+        render_case1_n_aspects(df, summarizer)
+    else:
+        render_case2_aspect_name(df, summarizer)
+
+
+def render_case1_n_aspects(df, summarizer):
+    """Case 1: Nhập sản phẩm/danh mục + số khía cạnh."""
+    st.markdown("### Case 1: Phát Hiện N Khía Cạnh Phổ Biến")
+    
+    st.markdown("""
+    **Workflow:**
+    1. Lọc reviews theo sản phẩm hoặc danh mục
+    2. Embedding tất cả reviews
+    3. Giảm chiều (UMAP) → Gom cụm (KMeans với k = N)
+    4. Đặt tên cho từng cluster bằng LLM
+    5. Tóm tắt từng khía cạnh
+    """)
+    
+    # Input fields
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Chọn danh mục
+        categories = ['Tất cả']
+        if 'product_category' in df.columns:
+            cats = df['product_category'].dropna().unique().tolist()
+            cats = [c for c in cats if c not in ['Unknown', 'Other']]
+            categories += sorted(cats)
         
-        # Generate response
-        with st.spinner("Dang phan tich..."):
-            response = generate_gemini_response(user_input, df, summarizer)
+        selected_category = st.selectbox("Chọn danh mục sản phẩm:", categories)
         
-        # Add bot response
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        st.markdown(f'<div class="bot-message">{response}</div>', unsafe_allow_html=True)
+        # Hoặc nhập tên sản phẩm
+        product_name = st.text_input(
+            "Hoặc nhập tên sản phẩm:",
+            placeholder="Ví dụ: headphones, TV, tablet..."
+        )
+    
+    with col2:
+        n_aspects = st.number_input(
+            "Số khía cạnh muốn phát hiện:",
+            min_value=2,
+            max_value=10,
+            value=3,
+            help="Số cụm (clusters) sẽ được tạo"
+        )
         
-        st.rerun()
+        max_reviews = st.number_input(
+            "Số reviews tối đa:",
+            min_value=50,
+            max_value=1000,
+            value=300,
+            help="Giới hạn số reviews để xử lý nhanh hơn"
+        )
     
-    # Clear chat button
-    if st.button("Xoa lich su chat"):
-        st.session_state.messages = []
-        st.rerun()
-
-
-def generate_gemini_response(query: str, df: pd.DataFrame, summarizer) -> str:
-    """Generate response using Gemini API."""
-    
-    # Get Gemini client
-    gemini_client = get_gemini_client()
-    
-    if gemini_client is None:
-        return generate_fallback_response(query, df, summarizer)
-    
-    # Prepare context about the data
-    context = prepare_data_context(df)
-    
-    # Detect query intent and get relevant data
-    relevant_data = get_relevant_data_for_query(query, df, summarizer)
-    
-    # Build prompt
-    prompt = f"""Ban la mot chuyen gia phan tich danh gia san pham. Hay tra loi cau hoi sau dua tren du lieu:
-
-**Du lieu tong quan:**
-{context}
-
-**Du lieu lien quan den cau hoi:**
-{relevant_data}
-
-**Cau hoi cua nguoi dung:**
-{query}
-
-**Huong dan tra loi:**
-- Tra loi bang tieng Viet
-- Su dung ngon ngu tu nhien, de hieu
-- Dua ra so lieu cu the neu co
-- Neu khong co du lieu, noi ro la khong tim thay
-- Tra loi ngan gon nhung day du thong tin
-
-**Tra loi:**"""
-
-    try:
-        response = gemini_client.generate(prompt, max_tokens=500)
-        return response.strip() if response else generate_fallback_response(query, df, summarizer)
-    except Exception as e:
-        st.warning(f"Gemini API error: {e}")
-        return generate_fallback_response(query, df, summarizer)
-
-
-def prepare_data_context(df: pd.DataFrame) -> str:
-    """Prepare context string about the dataset."""
-    avg_rating = df['rating'].mean() if 'rating' in df.columns else None
-    avg_rating_str = f"{avg_rating:.2f}" if avg_rating else 'N/A'
-    
-    context = f"""
-- Tong so danh gia: {len(df):,}
-- So san pham: {df['pageurl'].nunique() if 'pageurl' in df.columns else 'N/A'}
-- So danh muc: {df['product_category'].nunique() if 'product_category' in df.columns else 'N/A'}
-- Rating trung binh: {avg_rating_str}
-"""
-    
-    if 'product_category' in df.columns:
-        top_cats = df['product_category'].value_counts().head(5)
-        context += "\nTop 5 danh muc:\n"
-        for cat, count in top_cats.items():
-            context += f"- {cat}: {count:,} danh gia\n"
-    
-    return context
-
-
-def get_relevant_data_for_query(query: str, df: pd.DataFrame, summarizer) -> str:
-    """Extract relevant data based on query."""
-    query_lower = query.lower()
-    
-    # Check for aspect query
-    aspects = ['quality', 'price', 'shipping', 'sound', 'battery', 'screen', 'delivery', 
-               'value', 'customer service', 'packaging', 'durability', 'chat luong', 
-               'gia', 'giao hang', 'am thanh', 'pin', 'man hinh']
-    
-    found_aspect = None
-    for aspect in aspects:
-        if aspect in query_lower:
-            found_aspect = aspect
-            break
-    
-    if found_aspect:
-        # Get aspect summary
-        result = summarizer.summarize_aspect(found_aspect, max_reviews=30)
-        return f"""
-Aspect: {found_aspect}
-So luong de cap: {result['review_count']}
-Sentiment: {result['sentiment']}
-Ty le positive: {result.get('sentiment_scores', {}).get('positive', 0)}%
-Ty le negative: {result.get('sentiment_scores', {}).get('negative', 0)}%
-Sample reviews: {result.get('sample_reviews', [])[:3]}
-"""
-    
-    # Check for category query
-    if 'product_category' in df.columns:
-        for cat in df['product_category'].unique():
-            if str(cat).lower() in query_lower or query_lower in str(cat).lower():
-                cat_df = df[df['product_category'] == cat]
-                return f"""
-Danh muc: {cat}
-So danh gia: {len(cat_df):,}
-Rating TB: {cat_df['rating'].mean():.2f}
-5 sao: {(cat_df['rating'] == 5).sum():,}
-1 sao: {(cat_df['rating'] == 1).sum():,}
-"""
-    
-    # Check for "top aspects" query
-    if 'khia canh' in query_lower or 'aspect' in query_lower or 'pho bien' in query_lower:
-        # Extract number if present
-        import re
-        numbers = re.findall(r'\d+', query)
-        n = int(numbers[0]) if numbers else 3
+    if st.button("Phân Tích Khía Cạnh", type="primary", key="case1_btn"):
+        category = None if selected_category == "Tất cả" else selected_category
+        product = product_name if product_name.strip() else None
         
-        # Get top aspects across all data
-        aspect_counts = {}
-        for col in df.columns:
-            if col.startswith('has_'):
-                aspect = col.replace('has_', '')
-                count = df[col].sum() if df[col].dtype == bool else (df[col] == True).sum()
-                aspect_counts[aspect] = count
+        if not category and not product:
+            st.warning("Vui lòng chọn danh mục hoặc nhập tên sản phẩm.")
+            return
         
-        sorted_aspects = sorted(aspect_counts.items(), key=lambda x: x[1], reverse=True)[:n]
-        return f"Top {n} aspects duoc de cap nhieu nhat:\n" + "\n".join([f"- {a}: {c:,} lan" for a, c in sorted_aspects])
-    
-    # Default: return general stats
-    return "Khong tim thay du lieu cu the. Hay thu hoi ve mot aspect hoac danh muc san pham cu the."
+        with st.spinner("Đang phân tích... (có thể mất 1-2 phút)"):
+            try:
+                # Import EmbeddingAspectSummarizer trực tiếp
+                from src.analysis.aspect_summarizer import EmbeddingAspectSummarizer
+                
+                # Kiểm tra xem có thể sử dụng embedding không
+                embedding_summarizer = EmbeddingAspectSummarizer(df)
+                
+                result = embedding_summarizer.analyze_by_num_aspects(
+                    n_aspects=int(n_aspects),
+                    product=product,
+                    category=category,
+                    max_reviews=int(max_reviews)
+                )
+                
+                display_case1_result(result)
+                
+            except Exception as e:
+                st.error(f"Lỗi phân tích: {str(e)}")
+                st.info("Đảm bảo đã cài đặt: pip install sentence-transformers umap-learn scikit-learn")
 
 
-def generate_fallback_response(query: str, df: pd.DataFrame, summarizer) -> str:
-    """Generate response without Gemini API."""
-    query_lower = query.lower()
+def display_case1_result(result):
+    """Hiển thị kết quả Case 1."""
+    if not result.get('success'):
+        st.error(result.get('error', 'Có lỗi xảy ra'))
+        return
     
-    # Simple keyword matching
-    if 'quality' in query_lower or 'chat luong' in query_lower:
-        result = summarizer.summarize_aspect('quality', max_reviews=20)
-        return f"Ve chat luong: {result['summary']}\nSo luong de cap: {result['review_count']}, Sentiment: {result['sentiment']}"
+    st.markdown("---")
+    st.markdown(f"### Kết Quả: {result.get('n_aspects')} Khía Cạnh")
     
-    if 'price' in query_lower or 'gia' in query_lower:
-        result = summarizer.summarize_aspect('price', max_reviews=20)
-        return f"Ve gia ca: {result['summary']}\nSo luong de cap: {result['review_count']}, Sentiment: {result['sentiment']}"
+    # Thông tin tổng quan
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Tổng Reviews Phân Tích", f"{result.get('total_reviews', 0):,}")
+    with col2:
+        st.metric("Số Khía Cạnh", result.get('n_aspects', 0))
+    with col3:
+        if result.get('category'):
+            st.metric("Danh Mục", result.get('category', 'N/A'))
+        elif result.get('product'):
+            st.metric("Sản Phẩm", result.get('product', 'N/A'))
     
-    if 'shipping' in query_lower or 'giao hang' in query_lower:
-        result = summarizer.summarize_aspect('shipping', max_reviews=20)
-        return f"Ve giao hang: {result['summary']}\nSo luong de cap: {result['review_count']}, Sentiment: {result['sentiment']}"
+    st.markdown("---")
     
-    return f"Toi co the giup ban phan tich cac khia canh nhu: quality, price, shipping, sound, battery, screen. Hay hoi cu the ve mot khia canh nao do!"
+    # Hiển thị từng khía cạnh
+    for aspect in result.get('aspects', []):
+        with st.container():
+            st.markdown(f"#### Khía cạnh {aspect['aspect_id']}: {aspect['aspect_name']}")
+            
+            col1, col2 = st.columns([1, 3])
+            
+            with col1:
+                st.metric("Số Reviews", aspect['review_count'])
+            
+            with col2:
+                st.markdown(f"**Tóm tắt:**")
+                st.markdown(aspect['summary'])
+            
+            # Sample reviews
+            if aspect.get('sample_reviews'):
+                with st.expander("Xem các đánh giá mẫu"):
+                    for i, review in enumerate(aspect['sample_reviews'][:5], 1):
+                        truncated = review[:300] + "..." if len(review) > 300 else review
+                        st.markdown(f"**{i}.** {truncated}")
+            
+            st.markdown("---")
+
+
+def render_case2_aspect_name(df, summarizer):
+    """Case 2: Nhập sản phẩm + tên khía cạnh."""
+    st.markdown("### Case 2: Phân Tích Theo Tên Khía Cạnh")
+    
+    st.markdown("""
+    **Workflow:**
+    1. Lọc reviews theo sản phẩm hoặc danh mục
+    2. Embedding reviews + embedding tên khía cạnh
+    3. Tính cosine similarity giữa reviews và khía cạnh
+    4. Lọc reviews có similarity cao
+    5. Tóm tắt các reviews đó bằng LLM
+    """)
+    
+    # Input fields
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Chọn danh mục
+        categories = ['Tất cả']
+        if 'product_category' in df.columns:
+            cats = df['product_category'].dropna().unique().tolist()
+            cats = [c for c in cats if c not in ['Unknown', 'Other']]
+            categories += sorted(cats)
+        
+        selected_category = st.selectbox(
+            "Chọn danh mục sản phẩm:", 
+            categories,
+            key="case2_category"
+        )
+        
+        # Hoặc nhập tên sản phẩm
+        product_name = st.text_input(
+            "Hoặc nhập tên sản phẩm:",
+            placeholder="Ví dụ: headphones, TV, tablet...",
+            key="case2_product"
+        )
+    
+    with col2:
+        aspect_name = st.text_input(
+            "Nhập tên khía cạnh muốn phân tích:",
+            placeholder="Ví dụ: sound quality, battery life, shipping speed...",
+            help="Hệ thống sẽ tìm các reviews có ngữ nghĩa tương tự"
+        )
+        
+        similarity_threshold = st.slider(
+            "Ngưỡng similarity tối thiểu:",
+            min_value=0.1,
+            max_value=0.8,
+            value=0.3,
+            step=0.05,
+            help="Chỉ lấy reviews có similarity >= ngưỡng này"
+        )
+    
+    if st.button("Phân Tích Khía Cạnh", type="primary", key="case2_btn"):
+        if not aspect_name.strip():
+            st.warning("Vui lòng nhập tên khía cạnh.")
+            return
+        
+        category = None if selected_category == "Tất cả" else selected_category
+        product = product_name if product_name.strip() else None
+        
+        with st.spinner("Đang phân tích... (có thể mất 1-2 phút)"):
+            try:
+                from src.analysis.aspect_summarizer import EmbeddingAspectSummarizer
+                
+                embedding_summarizer = EmbeddingAspectSummarizer(df)
+                
+                result = embedding_summarizer.analyze_by_aspect_name(
+                    aspect_name=aspect_name,
+                    product=product,
+                    category=category,
+                    similarity_threshold=similarity_threshold
+                )
+                
+                display_case2_result(result)
+                
+            except Exception as e:
+                st.error(f"Lỗi phân tích: {str(e)}")
+                st.info("Đảm bảo đã cài đặt: pip install sentence-transformers scikit-learn")
+
+
+def display_case2_result(result):
+    """Hiển thị kết quả Case 2."""
+    if not result.get('success'):
+        st.error(result.get('error', 'Có lỗi xảy ra'))
+        return
+    
+    st.markdown("---")
+    st.markdown(f"### Kết Quả: Khía Cạnh \"{result.get('aspect_name')}\"")
+    
+    # Thông tin tổng quan
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Tổng Reviews", f"{result.get('total_reviews_analyzed', 0):,}")
+    with col2:
+        st.metric("Reviews Liên Quan", f"{result.get('relevant_reviews_count', 0):,}")
+    with col3:
+        st.metric("Similarity TB", f"{result.get('avg_similarity', 0):.3f}")
+    with col4:
+        sentiment = result.get('sentiment', {})
+        if sentiment.get('positive_pct', 0) > 50:
+            st.metric("Sentiment", f"Positive ({sentiment.get('positive_pct')}%)")
+        elif sentiment.get('negative_pct', 0) > 30:
+            st.metric("Sentiment", f"Negative ({sentiment.get('negative_pct')}%)")
+        else:
+            st.metric("Sentiment", f"Neutral ({sentiment.get('neutral_pct')}%)")
+    
+    st.markdown("---")
+    
+    # Tóm tắt
+    st.markdown("#### Tóm Tắt")
+    st.markdown(result.get('summary', 'Không có tóm tắt'))
+    
+    # Sentiment breakdown
+    st.markdown("---")
+    st.markdown("#### Phân Bổ Sentiment")
+    
+    sentiment = result.get('sentiment', {})
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Positive", f"{sentiment.get('positive_pct', 0)}%")
+    with col2:
+        st.metric("Neutral", f"{sentiment.get('neutral_pct', 0)}%")
+    with col3:
+        st.metric("Negative", f"{sentiment.get('negative_pct', 0)}%")
+    
+    # Sample reviews với similarity
+    st.markdown("---")
+    st.markdown("#### Các Đánh Giá Liên Quan Nhất")
+    
+    sample_reviews = result.get('sample_reviews', [])
+    if sample_reviews:
+        for i, item in enumerate(sample_reviews, 1):
+            review = item.get('review', '')
+            similarity = item.get('similarity', 0)
+            
+            truncated = review[:400] + "..." if len(review) > 400 else review
+            
+            with st.container():
+                st.markdown(f"**{i}. (Similarity: {similarity:.3f})**")
+                st.markdown(f"> {truncated}")
+                st.markdown("")
+    else:
+        st.info("Không tìm thấy reviews liên quan.")
 
 
 def main():
@@ -724,7 +836,7 @@ def main():
     df = load_data()
     
     if df is None:
-        st.error("Khong tim thay du lieu. Hay chay pipeline truoc.")
+        st.error("Không tìm thấy dữ liệu. Hãy chạy pipeline trước.")
         st.code("python main.py", language="bash")
         return
     
@@ -739,3 +851,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -1,382 +1,549 @@
 """
-Aspect Summarizer using LLM for generating natural language summaries.
+Aspect Summarizer sử dụng Embedding và Clustering.
 
-Combines BERTopic topics with Gemini LLM to create readable summaries
-of user feedback for specific aspects or product categories.
+Phương pháp:
+- Case 1: Nhập sản phẩm + số khía cạnh -> embedding -> UMAP -> clustering -> đặt tên -> summarize
+- Case 2: Nhập sản phẩm + tên khía cạnh -> embedding similarity -> trace reviews -> summarize
+
+Không sử dụng rule-based, hoàn toàn dựa trên semantic embeddings.
 """
 from __future__ import annotations
 
 import logging
-from typing import List, Dict, Any, Optional
-
+from typing import List, Dict, Any, Optional, Tuple
+import numpy as np
 import pandas as pd
-
-from src.config.settings import settings
-from src.clustering.gemini_client import GeminiClient
 
 logger = logging.getLogger(__name__)
 
 
-class AspectSummarizer:
+class EmbeddingAspectSummarizer:
     """
-    LLM-based summarizer for aspect-based review summarization.
+    Tóm tắt theo khía cạnh sử dụng Embeddings và Clustering.
     
-    Features:
-    - Summarize reviews for a specific aspect
-    - Get top aspects summary for a category
-    - Generate actionable insights
+    Workflow Case 1 (Số khía cạnh):
+    1. Lọc reviews theo sản phẩm/category
+    2. Tạo embeddings cho tất cả reviews
+    3. Giảm chiều bằng UMAP
+    4. Gom cụm bằng KMeans với k = số khía cạnh mong muốn
+    5. Đặt tên cho từng cluster bằng LLM
+    6. Trace lại các câu thuộc từng khía cạnh
+    7. Summarize từng khía cạnh bằng LLM
+    
+    Workflow Case 2 (Tên khía cạnh):
+    1. Lọc reviews theo sản phẩm/category
+    2. Tạo embeddings cho reviews và tên khía cạnh
+    3. Tính similarity giữa reviews và khía cạnh
+    4. Lọc reviews có similarity cao
+    5. Summarize các reviews đó bằng LLM
     """
     
-    def __init__(self, df: pd.DataFrame, topic_modeler=None):
+    def __init__(self, df: pd.DataFrame, model_name: str = 'all-MiniLM-L6-v2'):
         """
-        Initialize AspectSummarizer.
+        Khởi tạo EmbeddingAspectSummarizer.
         
         Args:
-            df: DataFrame with reviews
-            topic_modeler: Optional TopicModeler instance
+            df: DataFrame chứa reviews
+            model_name: Tên model sentence-transformers
         """
         self.df = df.copy()
-        self.topic_modeler = topic_modeler
+        self.model_name = model_name
+        self.embedding_model = None
         self.gemini_client = None
         
-        self._init_gemini()
+        self._init_models()
         
-    def _init_gemini(self) -> None:
-        """Initialize Gemini client."""
+    def _init_models(self) -> None:
+        """Khởi tạo các models cần thiết."""
+        # Sentence Transformers
         try:
+            from sentence_transformers import SentenceTransformer
+            self.embedding_model = SentenceTransformer(self.model_name)
+            logger.info(f"Đã tải embedding model: {self.model_name}")
+        except ImportError:
+            logger.error("Cần cài đặt: pip install sentence-transformers")
+        except Exception as e:
+            logger.error(f"Lỗi tải embedding model: {e}")
+            
+        # Gemini Client
+        try:
+            from src.clustering.gemini_client import GeminiClient
             self.gemini_client = GeminiClient()
             if not self.gemini_client.is_available:
-                logger.warning("Gemini API not available")
+                logger.warning("Gemini API không khả dụng")
                 self.gemini_client = None
         except Exception as e:
-            logger.warning(f"Failed to initialize Gemini: {e}")
+            logger.warning(f"Không thể khởi tạo Gemini: {e}")
             self.gemini_client = None
+    
+    def _get_reviews_for_product(
+        self, 
+        product: Optional[str] = None,
+        category: Optional[str] = None,
+        max_reviews: int = 500
+    ) -> pd.DataFrame:
+        """
+        Lọc reviews theo sản phẩm hoặc danh mục.
+        
+        Args:
+            product: Tên sản phẩm (tìm trong title)
+            category: Tên danh mục
+            max_reviews: Số lượng reviews tối đa
             
+        Returns:
+            DataFrame đã lọc
+        """
+        df = self.df.copy()
+        
+        # Lọc reviews có nội dung
+        if 'review' in df.columns:
+            df = df[df['review'].notna() & (df['review'] != '')]
+        else:
+            return pd.DataFrame()
+        
+        # Lọc theo category
+        if category and 'product_category' in df.columns:
+            df = df[df['product_category'].str.contains(category, case=False, na=False)]
+            
+        # Lọc theo product name
+        if product and 'title' in df.columns:
+            df = df[df['title'].str.contains(product, case=False, na=False)]
+            
+        # Giới hạn số lượng
+        if len(df) > max_reviews:
+            df = df.sample(n=max_reviews, random_state=42)
+            
+        return df
+    
+    def _create_embeddings(self, texts: List[str]) -> np.ndarray:
+        """
+        Tạo embeddings cho danh sách văn bản.
+        
+        Args:
+            texts: Danh sách văn bản
+            
+        Returns:
+            Ma trận embeddings (n_texts, embedding_dim)
+        """
+        if self.embedding_model is None:
+            raise ValueError("Embedding model chưa được khởi tạo")
+            
+        embeddings = self.embedding_model.encode(
+            texts, 
+            show_progress_bar=True,
+            convert_to_numpy=True
+        )
+        return embeddings
+    
+    def _reduce_dimensions(self, embeddings: np.ndarray, n_components: int = 5) -> np.ndarray:
+        """
+        Giảm chiều embeddings bằng UMAP.
+        
+        Args:
+            embeddings: Ma trận embeddings
+            n_components: Số chiều đầu ra
+            
+        Returns:
+            Ma trận đã giảm chiều
+        """
+        try:
+            from umap import UMAP
+            reducer = UMAP(
+                n_components=n_components,
+                n_neighbors=min(15, len(embeddings) - 1),
+                min_dist=0.1,
+                metric='cosine',
+                random_state=42
+            )
+            reduced = reducer.fit_transform(embeddings)
+            return reduced
+        except ImportError:
+            logger.warning("UMAP không khả dụng, sử dụng PCA")
+            from sklearn.decomposition import PCA
+            pca = PCA(n_components=min(n_components, embeddings.shape[1]))
+            return pca.fit_transform(embeddings)
+    
+    def _cluster_embeddings(self, embeddings: np.ndarray, n_clusters: int) -> np.ndarray:
+        """
+        Gom cụm embeddings bằng KMeans.
+        
+        Args:
+            embeddings: Ma trận embeddings (đã giảm chiều)
+            n_clusters: Số cụm mong muốn
+            
+        Returns:
+            Array labels cho từng document
+        """
+        from sklearn.cluster import KMeans
+        
+        kmeans = KMeans(
+            n_clusters=n_clusters,
+            random_state=42,
+            n_init=10
+        )
+        labels = kmeans.fit_predict(embeddings)
+        return labels
+    
+    def _name_cluster(self, reviews: List[str]) -> str:
+        """
+        Đặt tên cho cluster bằng LLM.
+        
+        Args:
+            reviews: Danh sách reviews trong cluster
+            
+        Returns:
+            Tên khía cạnh
+        """
+        if self.gemini_client is None:
+            # Fallback: lấy từ phổ biến nhất
+            from collections import Counter
+            words = ' '.join(reviews[:10]).lower().split()
+            common = Counter(words).most_common(3)
+            return ' / '.join([w for w, _ in common if len(w) > 3])
+        
+        sample_reviews = reviews[:10]
+        reviews_text = '\n'.join([f"- {r[:150]}" for r in sample_reviews])
+        
+        prompt = f"""Phân tích các đánh giá sau và đặt TÊN NGẮN GỌN (2-3 từ) cho khía cạnh chung mà chúng đề cập:
+
+Các đánh giá:
+{reviews_text}
+
+Yêu cầu:
+- Tên phải ngắn gọn (2-3 từ)
+- Phản ánh khía cạnh chung của các đánh giá
+- Ví dụ: "Chất lượng âm thanh", "Thời gian giao hàng", "Giá trị sản phẩm"
+
+Tên khía cạnh:"""
+
+        try:
+            response = self.gemini_client.generate(prompt, max_tokens=50)
+            return response.strip().strip('"').strip("'") if response else "Khía cạnh chung"
+        except Exception:
+            return "Khía cạnh chung"
+    
+    def _summarize_reviews(self, aspect_name: str, reviews: List[str]) -> str:
+        """
+        Tóm tắt các reviews của một khía cạnh bằng LLM.
+        
+        Args:
+            aspect_name: Tên khía cạnh
+            reviews: Danh sách reviews
+            
+        Returns:
+            Bản tóm tắt
+        """
+        if self.gemini_client is None:
+            return f"Có {len(reviews)} đánh giá về {aspect_name}."
+        
+        sample_reviews = reviews[:20]
+        reviews_text = '\n'.join([f"- {r[:200]}" for r in sample_reviews])
+        
+        prompt = f"""Tóm tắt những gì khách hàng nói về "{aspect_name}" dựa trên các đánh giá sau:
+
+Các đánh giá:
+{reviews_text}
+
+Yêu cầu:
+- Viết bằng tiếng Việt
+- Tóm tắt ngắn gọn 2-3 câu
+- Nêu rõ ý kiến chung (tích cực/tiêu cực)
+- Đề cập các điểm cụ thể được nhắc đến
+
+Tóm tắt:"""
+
+        try:
+            response = self.gemini_client.generate(prompt, max_tokens=300)
+            return response.strip() if response else f"Có {len(reviews)} đánh giá về {aspect_name}."
+        except Exception as e:
+            logger.error(f"Lỗi summarize: {e}")
+            return f"Có {len(reviews)} đánh giá về {aspect_name}."
+    
+    def analyze_by_num_aspects(
+        self,
+        n_aspects: int,
+        product: Optional[str] = None,
+        category: Optional[str] = None,
+        max_reviews: int = 500
+    ) -> Dict[str, Any]:
+        """
+        Case 1: Phân tích theo số khía cạnh mong muốn.
+        
+        Workflow:
+        1. Lọc reviews theo sản phẩm/category
+        2. Tạo embeddings
+        3. Giảm chiều bằng UMAP
+        4. Gom cụm bằng KMeans với k = n_aspects
+        5. Đặt tên cho từng cluster
+        6. Summarize từng khía cạnh
+        
+        Args:
+            n_aspects: Số khía cạnh mong muốn
+            product: Tên sản phẩm (tùy chọn)
+            category: Tên danh mục (tùy chọn)
+            max_reviews: Số reviews tối đa
+            
+        Returns:
+            Kết quả phân tích với các khía cạnh và tóm tắt
+        """
+        logger.info(f"Phân tích {n_aspects} khía cạnh cho {product or category or 'tất cả sản phẩm'}")
+        
+        # Bước 1: Lọc reviews
+        filtered_df = self._get_reviews_for_product(product, category, max_reviews)
+        
+        if len(filtered_df) < n_aspects:
+            return {
+                'success': False,
+                'error': f"Không đủ reviews ({len(filtered_df)}). Cần ít nhất {n_aspects} reviews.",
+                'product': product,
+                'category': category
+            }
+        
+        reviews = filtered_df['review'].tolist()
+        logger.info(f"Đã lọc được {len(reviews)} reviews")
+        
+        # Bước 2: Tạo embeddings
+        logger.info("Đang tạo embeddings...")
+        embeddings = self._create_embeddings(reviews)
+        
+        # Bước 3: Giảm chiều
+        logger.info("Đang giảm chiều...")
+        n_components = min(10, len(reviews) - 1, embeddings.shape[1])
+        reduced = self._reduce_dimensions(embeddings, n_components=n_components)
+        
+        # Bước 4: Gom cụm
+        logger.info(f"Đang gom cụm thành {n_aspects} nhóm...")
+        labels = self._cluster_embeddings(reduced, n_clusters=n_aspects)
+        
+        # Bước 5 & 6: Đặt tên và summarize từng cluster
+        aspects_result = []
+        
+        for cluster_id in range(n_aspects):
+            cluster_mask = labels == cluster_id
+            cluster_reviews = [reviews[i] for i in range(len(reviews)) if cluster_mask[i]]
+            
+            if not cluster_reviews:
+                continue
+                
+            # Đặt tên
+            logger.info(f"Đang đặt tên cho cluster {cluster_id + 1}...")
+            aspect_name = self._name_cluster(cluster_reviews)
+            
+            # Summarize
+            logger.info(f"Đang tóm tắt cluster {cluster_id + 1}...")
+            summary = self._summarize_reviews(aspect_name, cluster_reviews)
+            
+            aspects_result.append({
+                'aspect_id': cluster_id + 1,
+                'aspect_name': aspect_name,
+                'review_count': len(cluster_reviews),
+                'summary': summary,
+                'sample_reviews': cluster_reviews[:5]
+            })
+        
+        return {
+            'success': True,
+            'product': product,
+            'category': category,
+            'total_reviews': len(reviews),
+            'n_aspects': n_aspects,
+            'aspects': aspects_result
+        }
+    
+    def analyze_by_aspect_name(
+        self,
+        aspect_name: str,
+        product: Optional[str] = None,
+        category: Optional[str] = None,
+        max_reviews: int = 500,
+        similarity_threshold: float = 0.3
+    ) -> Dict[str, Any]:
+        """
+        Case 2: Phân tích theo tên khía cạnh.
+        
+        Workflow:
+        1. Lọc reviews theo sản phẩm/category
+        2. Tạo embeddings cho reviews
+        3. Tạo embedding cho tên khía cạnh
+        4. Tính similarity giữa reviews và khía cạnh
+        5. Lọc reviews có similarity cao
+        6. Summarize các reviews đó
+        
+        Args:
+            aspect_name: Tên khía cạnh muốn phân tích
+            product: Tên sản phẩm (tùy chọn)
+            category: Tên danh mục (tùy chọn)
+            max_reviews: Số reviews tối đa
+            similarity_threshold: Ngưỡng similarity tối thiểu
+            
+        Returns:
+            Kết quả phân tích với tóm tắt
+        """
+        logger.info(f"Phân tích khía cạnh '{aspect_name}' cho {product or category or 'tất cả sản phẩm'}")
+        
+        # Bước 1: Lọc reviews
+        filtered_df = self._get_reviews_for_product(product, category, max_reviews)
+        
+        if len(filtered_df) == 0:
+            return {
+                'success': False,
+                'error': "Không tìm thấy reviews phù hợp.",
+                'aspect_name': aspect_name,
+                'product': product,
+                'category': category
+            }
+        
+        reviews = filtered_df['review'].tolist()
+        logger.info(f"Đã lọc được {len(reviews)} reviews")
+        
+        # Bước 2: Tạo embeddings cho reviews
+        logger.info("Đang tạo embeddings cho reviews...")
+        review_embeddings = self._create_embeddings(reviews)
+        
+        # Bước 3: Tạo embedding cho tên khía cạnh
+        aspect_embedding = self._create_embeddings([aspect_name])[0]
+        
+        # Bước 4: Tính cosine similarity
+        from sklearn.metrics.pairwise import cosine_similarity
+        similarities = cosine_similarity([aspect_embedding], review_embeddings)[0]
+        
+        # Bước 5: Lọc reviews có similarity cao
+        relevant_indices = np.where(similarities >= similarity_threshold)[0]
+        relevant_reviews = [reviews[i] for i in relevant_indices]
+        relevant_similarities = [similarities[i] for i in relevant_indices]
+        
+        if not relevant_reviews:
+            # Nếu không có review nào đạt ngưỡng, lấy top 20 reviews gần nhất
+            top_indices = np.argsort(similarities)[-20:][::-1]
+            relevant_reviews = [reviews[i] for i in top_indices]
+            relevant_similarities = [similarities[i] for i in top_indices]
+        
+        logger.info(f"Tìm thấy {len(relevant_reviews)} reviews liên quan đến '{aspect_name}'")
+        
+        # Bước 6: Summarize
+        summary = self._summarize_reviews(aspect_name, relevant_reviews)
+        
+        # Tính sentiment đơn giản
+        positive_keywords = ['tốt', 'hay', 'đẹp', 'great', 'good', 'excellent', 'love', 'amazing']
+        negative_keywords = ['tệ', 'xấu', 'dở', 'bad', 'terrible', 'hate', 'poor', 'broken']
+        
+        positive_count = sum(1 for r in relevant_reviews 
+                          if any(kw in r.lower() for kw in positive_keywords))
+        negative_count = sum(1 for r in relevant_reviews 
+                          if any(kw in r.lower() for kw in negative_keywords))
+        
+        total = len(relevant_reviews)
+        
+        return {
+            'success': True,
+            'aspect_name': aspect_name,
+            'product': product,
+            'category': category,
+            'total_reviews_analyzed': len(reviews),
+            'relevant_reviews_count': len(relevant_reviews),
+            'avg_similarity': float(np.mean(relevant_similarities)),
+            'sentiment': {
+                'positive_pct': round(positive_count / total * 100, 1) if total > 0 else 0,
+                'negative_pct': round(negative_count / total * 100, 1) if total > 0 else 0,
+                'neutral_pct': round((total - positive_count - negative_count) / total * 100, 1) if total > 0 else 0
+            },
+            'summary': summary,
+            'sample_reviews': [
+                {'review': relevant_reviews[i], 'similarity': round(relevant_similarities[i], 3)}
+                for i in range(min(5, len(relevant_reviews)))
+            ]
+        }
+
+
+# Giữ lại class cũ cho backward compatibility
+class AspectSummarizer:
+    """Wrapper class để tương thích với code cũ."""
+    
+    def __init__(self, df: pd.DataFrame, topic_modeler=None):
+        self.df = df
+        self.embedding_summarizer = None
+        self._init_embedding_summarizer()
+        
+    def _init_embedding_summarizer(self):
+        try:
+            self.embedding_summarizer = EmbeddingAspectSummarizer(self.df)
+        except Exception as e:
+            logger.warning(f"Không thể khởi tạo EmbeddingAspectSummarizer: {e}")
+    
     def summarize_aspect(
         self,
         aspect: str,
         category: Optional[str] = None,
-        max_reviews: int = 50
+        max_reviews: int = 100
     ) -> Dict[str, Any]:
-        """
-        Summarize what users say about a specific aspect.
-        
-        Args:
-            aspect: Aspect name (e.g., "battery life", "sound quality")
-            category: Optional product category to filter
-            max_reviews: Maximum reviews to analyze
+        """Tóm tắt khía cạnh (tương thích code cũ)."""
+        if self.embedding_summarizer:
+            result = self.embedding_summarizer.analyze_by_aspect_name(
+                aspect_name=aspect,
+                category=category,
+                max_reviews=max_reviews
+            )
             
-        Returns:
-            Summary dictionary with insights
-        """
-        logger.info(f"Summarizing aspect: {aspect}")
+            if result['success']:
+                return {
+                    'aspect': aspect,
+                    'category': category,
+                    'review_count': result['relevant_reviews_count'],
+                    'summary': result['summary'],
+                    'sentiment': 'positive' if result['sentiment']['positive_pct'] > 50 else 
+                                'negative' if result['sentiment']['negative_pct'] > 30 else 'neutral',
+                    'sentiment_scores': result['sentiment'],
+                    'key_points': [],
+                    'sample_reviews': [r['review'] for r in result.get('sample_reviews', [])]
+                }
         
-        # Get relevant reviews
-        reviews = self._get_reviews_for_aspect(aspect, category, max_reviews)
-        
-        if len(reviews) == 0:
-            return {
-                'aspect': aspect,
-                'category': category,
-                'review_count': 0,
-                'summary': f"No reviews found mentioning '{aspect}'.",
-                'sentiment': 'neutral',
-                'key_points': []
-            }
-            
-        # Analyze sentiment distribution
-        sentiment_dist = self._analyze_sentiment(reviews)
-        
-        # Generate LLM summary
-        summary = self._generate_summary(aspect, reviews, category)
-        
-        # Extract key points
-        key_points = self._extract_key_points(aspect, reviews)
-        
+        # Fallback
         return {
             'aspect': aspect,
             'category': category,
-            'review_count': len(reviews),
-            'summary': summary,
-            'sentiment': sentiment_dist['dominant'],
-            'sentiment_scores': sentiment_dist,
-            'key_points': key_points,
-            'sample_reviews': reviews[:5].tolist()
+            'review_count': 0,
+            'summary': f"Không thể phân tích khía cạnh '{aspect}'.",
+            'sentiment': 'neutral',
+            'sentiment_scores': {'positive': 0, 'negative': 0, 'neutral': 100},
+            'key_points': [],
+            'sample_reviews': []
         }
-        
+    
     def get_top_aspects_for_category(
         self,
         category: str,
         n_aspects: int = 5
     ) -> Dict[str, Any]:
-        """
-        Get top N aspects discussed for a product category.
+        """Lấy top N khía cạnh cho danh mục (tương thích code cũ)."""
+        if self.embedding_summarizer:
+            result = self.embedding_summarizer.analyze_by_num_aspects(
+                n_aspects=n_aspects,
+                category=category
+            )
+            
+            if result['success']:
+                aspects = []
+                for asp in result['aspects']:
+                    aspects.append({
+                        'aspect': asp['aspect_name'],
+                        'review_count': asp['review_count'],
+                        'summary': asp['summary'],
+                        'sentiment': 'neutral',
+                        'sentiment_scores': {'positive': 0, 'negative': 0, 'neutral': 100},
+                        'key_points': [],
+                        'sample_reviews': asp.get('sample_reviews', [])
+                    })
+                
+                return {
+                    'category': category,
+                    'total_reviews': result['total_reviews'],
+                    'aspects': aspects
+                }
         
-        Args:
-            category: Product category name
-            n_aspects: Number of aspects to return
-            
-        Returns:
-            Dictionary with top aspects and summaries
-        """
-        logger.info(f"Getting top {n_aspects} aspects for: {category}")
-        
-        # Filter to category
-        if 'product_category' in self.df.columns:
-            category_df = self.df[self.df['product_category'] == category]
-        else:
-            category_df = self.df
-            
-        if len(category_df) == 0:
-            return {
-                'category': category,
-                'error': f"No reviews found for category: {category}",
-                'aspects': []
-            }
-            
-        # Get aspects from TopicModeler if available
-        if self.topic_modeler is not None:
-            topics = self.topic_modeler.get_topics_for_category(category, top_n=n_aspects)
-            aspects = [t['label'] for t in topics]
-        else:
-            # Fallback: use predefined aspects
-            aspects = self._get_common_aspects(category_df, n_aspects)
-            
-        # Summarize each aspect
-        aspect_summaries = []
-        for aspect in aspects[:n_aspects]:
-            summary = self.summarize_aspect(aspect, category, max_reviews=30)
-            aspect_summaries.append(summary)
-            
+        # Fallback
         return {
             'category': category,
-            'total_reviews': len(category_df),
-            'aspects': aspect_summaries
+            'total_reviews': 0,
+            'error': "Không thể phân tích.",
+            'aspects': []
         }
-        
-    def _get_reviews_for_aspect(
-        self,
-        aspect: str,
-        category: Optional[str],
-        max_reviews: int
-    ) -> pd.Series:
-        """Get reviews mentioning a specific aspect."""
-        df = self.df.copy()
-        
-        # Filter by category if specified
-        if category and 'product_category' in df.columns:
-            df = df[df['product_category'] == category]
-            
-        # Filter to valid reviews
-        if 'review' not in df.columns:
-            return pd.Series(dtype=str)
-            
-        valid_mask = df['review'].notna() & (df['review'] != '')
-        df = df[valid_mask]
-        
-        # Search for aspect in reviews
-        aspect_lower = aspect.lower()
-        keywords = aspect_lower.split()
-        
-        # Match any keyword
-        mask = df['review'].str.lower().str.contains('|'.join(keywords), na=False, regex=True)
-        
-        matching = df[mask]['review'].head(max_reviews)
-        return matching
-        
-    def _analyze_sentiment(self, reviews: pd.Series) -> Dict[str, Any]:
-        """Analyze sentiment distribution of reviews."""
-        positive_keywords = ['great', 'excellent', 'love', 'amazing', 'good', 'best', 'perfect', 'happy']
-        negative_keywords = ['bad', 'terrible', 'hate', 'awful', 'worst', 'poor', 'broken', 'disappointed']
-        
-        positive_count = 0
-        negative_count = 0
-        neutral_count = 0
-        
-        for review in reviews:
-            review_lower = str(review).lower()
-            has_positive = any(kw in review_lower for kw in positive_keywords)
-            has_negative = any(kw in review_lower for kw in negative_keywords)
-            
-            if has_positive and not has_negative:
-                positive_count += 1
-            elif has_negative and not has_positive:
-                negative_count += 1
-            else:
-                neutral_count += 1
-                
-        total = len(reviews)
-        if total == 0:
-            return {'positive': 0, 'negative': 0, 'neutral': 0, 'dominant': 'neutral'}
-            
-        result = {
-            'positive': round(positive_count / total * 100, 1),
-            'negative': round(negative_count / total * 100, 1),
-            'neutral': round(neutral_count / total * 100, 1)
-        }
-        
-        # Determine dominant sentiment
-        max_sentiment = max(result, key=result.get)
-        result['dominant'] = max_sentiment
-        
-        return result
-        
-    def _generate_summary(
-        self,
-        aspect: str,
-        reviews: pd.Series,
-        category: Optional[str]
-    ) -> str:
-        """Generate LLM summary of reviews."""
-        if self.gemini_client is None:
-            return self._generate_fallback_summary(aspect, reviews)
-            
-        # Prepare sample reviews for prompt
-        sample_reviews = reviews.head(20).tolist()
-        reviews_text = '\n'.join([f"- {r[:200]}..." if len(str(r)) > 200 else f"- {r}" for r in sample_reviews])
-        
-        category_context = f" for {category} products" if category else ""
-        
-        prompt = f"""Analyze these customer reviews about "{aspect}"{category_context}.
-
-Reviews:
-{reviews_text}
-
-Provide a concise summary (2-3 sentences) of what customers think about {aspect}. 
-Focus on:
-1. Overall sentiment (positive/negative/mixed)
-2. Common praises or complaints
-3. Key takeaways
-
-Summary:"""
-
-        try:
-            summary = self.gemini_client.generate(prompt, max_tokens=200)
-            return summary.strip() if summary else self._generate_fallback_summary(aspect, reviews)
-        except Exception as e:
-            logger.warning(f"LLM summary failed: {e}")
-            return self._generate_fallback_summary(aspect, reviews)
-            
-    def _generate_fallback_summary(self, aspect: str, reviews: pd.Series) -> str:
-        """Generate simple summary without LLM."""
-        sentiment = self._analyze_sentiment(reviews)
-        
-        if sentiment['positive'] > sentiment['negative']:
-            tone = "generally positive"
-        elif sentiment['negative'] > sentiment['positive']:
-            tone = "generally negative"
-        else:
-            tone = "mixed"
-            
-        return (
-            f"Based on {len(reviews)} reviews mentioning '{aspect}', "
-            f"customer feedback is {tone}. "
-            f"Positive: {sentiment['positive']}%, "
-            f"Negative: {sentiment['negative']}%, "
-            f"Neutral: {sentiment['neutral']}%."
-        )
-        
-    def _extract_key_points(self, aspect: str, reviews: pd.Series, n_points: int = 5) -> List[str]:
-        """Extract key points from reviews."""
-        if self.gemini_client is None:
-            return []
-            
-        sample_reviews = reviews.head(15).tolist()
-        reviews_text = '\n'.join([f"- {str(r)[:150]}" for r in sample_reviews])
-        
-        prompt = f"""From these reviews about "{aspect}", extract {n_points} key points.
-
-Reviews:
-{reviews_text}
-
-List {n_points} brief key points (one line each):"""
-
-        try:
-            response = self.gemini_client.generate(prompt, max_tokens=300)
-            if response:
-                # Parse bullet points
-                lines = response.strip().split('\n')
-                points = []
-                for line in lines:
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        # Remove bullet markers
-                        line = line.lstrip('•-*0123456789. ')
-                        if line:
-                            points.append(line)
-                return points[:n_points]
-        except Exception as e:
-            logger.warning(f"Key points extraction failed: {e}")
-            
-        return []
-        
-    def _get_common_aspects(self, df: pd.DataFrame, n: int) -> List[str]:
-        """Get common aspects from reviews using keyword matching."""
-        common_aspects = [
-            'quality', 'price', 'value', 'shipping', 'delivery',
-            'sound', 'picture', 'battery', 'screen', 'size',
-            'easy to use', 'setup', 'customer service', 'warranty',
-            'design', 'durability', 'performance', 'features'
-        ]
-        
-        if 'review' not in df.columns:
-            return common_aspects[:n]
-            
-        # Count mentions
-        aspect_counts = {}
-        reviews = df['review'].dropna().str.lower()
-        
-        for aspect in common_aspects:
-            count = reviews.str.contains(aspect, na=False).sum()
-            if count > 0:
-                aspect_counts[aspect] = count
-                
-        # Sort by count
-        sorted_aspects = sorted(aspect_counts.items(), key=lambda x: x[1], reverse=True)
-        return [a[0] for a in sorted_aspects[:n]]
-        
-    def generate_category_report(self, category: str) -> str:
-        """
-        Generate a full text report for a category.
-        
-        Args:
-            category: Product category
-            
-        Returns:
-            Markdown report string
-        """
-        result = self.get_top_aspects_for_category(category, n_aspects=5)
-        
-        if 'error' in result:
-            return f"Error: {result['error']}"
-            
-        report_lines = [
-            f"# {category} - Review Analysis Report",
-            "",
-            f"Total Reviews Analyzed: {result['total_reviews']}",
-            "",
-            "## Top Aspects Discussed",
-            ""
-        ]
-        
-        for i, aspect in enumerate(result['aspects'], 1):
-            report_lines.extend([
-                f"### {i}. {aspect['aspect']}",
-                f"",
-                f"**Reviews mentioning this aspect:** {aspect['review_count']}",
-                f"",
-                f"**Sentiment:** {aspect['sentiment']} "
-                f"(Positive: {aspect.get('sentiment_scores', {}).get('positive', 0)}%, "
-                f"Negative: {aspect.get('sentiment_scores', {}).get('negative', 0)}%)",
-                f"",
-                f"**Summary:** {aspect['summary']}",
-                ""
-            ])
-            
-            if aspect.get('key_points'):
-                report_lines.append("**Key Points:**")
-                for point in aspect['key_points']:
-                    report_lines.append(f"- {point}")
-                report_lines.append("")
-                
-        return '\n'.join(report_lines)
