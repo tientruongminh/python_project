@@ -563,3 +563,186 @@ def evaluate_aspect_summarizer(summarizer, category: str, n_aspects: int = 3) ->
     evaluation['markdown_report'] = evaluator.generate_report_markdown(evaluation)
     
     return evaluation
+
+
+def full_dataset_evaluation(
+    df: pd.DataFrame,
+    n_aspects: int = 5,
+    max_reviews_per_category: int = 200,
+    max_categories: Optional[int] = None,
+    progress_callback = None
+) -> Dict[str, Any]:
+    """
+    Chạy đánh giá trên toàn bộ dataset (tất cả categories).
+    
+    Args:
+        df: DataFrame với reviews
+        n_aspects: Số aspects per category
+        max_reviews_per_category: Max reviews per category
+        max_categories: Limit số categories (optional, for testing)
+        progress_callback: Callback function(current, total, category)
+        
+    Returns:
+        Full evaluation report với aggregated scores
+    """
+    from src.analysis.aspect_summarizer import EmbeddingAspectSummarizer
+    
+    logger.info("Bắt đầu full dataset evaluation...")
+    
+    # Get categories
+    if 'product_category' not in df.columns:
+        return {'error': 'Không có cột product_category'}
+    
+    category_counts = df['product_category'].value_counts()
+    categories = [
+        cat for cat, count in category_counts.items() 
+        if count >= 50 and cat not in ['Unknown', 'Other']
+    ]
+    
+    if max_categories:
+        categories = categories[:max_categories]
+    
+    if not categories:
+        return {'error': 'Không có category nào đủ reviews'}
+    
+    logger.info(f"Đánh giá {len(categories)} categories...")
+    
+    # Initialize
+    summarizer = EmbeddingAspectSummarizer(df, fast_mode=True, use_cache=True)
+    evaluator = AspectModelEvaluator(summarizer.embedding_model)
+    
+    # Results storage
+    category_results = []
+    all_silhouette = []
+    all_coherence = []
+    all_coverage = []
+    failed_categories = []
+    
+    for i, category in enumerate(categories):
+        if progress_callback:
+            progress_callback(i + 1, len(categories), category)
+        
+        logger.info(f"[{i+1}/{len(categories)}] Đánh giá: {category}")
+        
+        try:
+            # Run analysis
+            result = summarizer.analyze_by_num_aspects(
+                n_aspects=n_aspects,
+                category=category,
+                max_reviews=max_reviews_per_category
+            )
+            
+            if not result.get('success'):
+                failed_categories.append({'category': category, 'error': result.get('error')})
+                continue
+            
+            # Get data for evaluation
+            filtered_df = summarizer._get_reviews_for_product(category=category, max_reviews=max_reviews_per_category)
+            reviews = filtered_df['review'].tolist()
+            
+            if len(reviews) < n_aspects:
+                failed_categories.append({'category': category, 'error': 'Không đủ reviews'})
+                continue
+            
+            embeddings = summarizer._create_embeddings(reviews)
+            reduced = summarizer._reduce_dimensions(embeddings)
+            labels = summarizer._cluster_embeddings(reduced, n_aspects)
+            
+            # Build clusters
+            clusters = {}
+            summaries = {}
+            for idx, label in enumerate(labels):
+                if label not in clusters:
+                    clusters[label] = []
+                clusters[label].append(reviews[idx])
+            
+            for aspect in result['aspects']:
+                cluster_id = aspect['aspect_id'] - 1
+                summaries[cluster_id] = aspect['summary']
+            
+            # Evaluate
+            eval_result = evaluator.run_full_evaluation(
+                embeddings=reduced,
+                labels=labels,
+                clusters=clusters,
+                summaries=summaries,
+                total_reviews=len(reviews)
+            )
+            
+            # Collect metrics
+            clustering = eval_result.get('clustering_quality', {})
+            coherence = eval_result.get('topic_coherence', {})
+            coverage = eval_result.get('coverage', {})
+            overall = eval_result.get('overall_assessment', {})
+            
+            silhouette = clustering.get('silhouette_score', 0)
+            coherence_score = coherence.get('overall_coherence', 0)
+            coverage_rate = coverage.get('coverage_rate', 0)
+            
+            all_silhouette.append(silhouette)
+            all_coherence.append(coherence_score)
+            all_coverage.append(coverage_rate)
+            
+            category_results.append({
+                'category': category,
+                'n_reviews': len(reviews),
+                'silhouette': round(silhouette, 4),
+                'coherence': round(coherence_score, 4),
+                'coverage': round(coverage_rate, 1),
+                'overall_score': round(overall.get('overall_score', 0), 4),
+                'grade': overall.get('grade', 'N/A'),
+                'aspects': [asp['aspect_name'] for asp in result.get('aspects', [])]
+            })
+            
+        except Exception as e:
+            logger.error(f"Error evaluating {category}: {e}")
+            failed_categories.append({'category': category, 'error': str(e)})
+    
+    # Calculate aggregate scores
+    if not category_results:
+        return {
+            'success': False,
+            'error': 'Không đánh giá được category nào',
+            'failed_categories': failed_categories
+        }
+    
+    avg_silhouette = float(np.mean(all_silhouette))
+    avg_coherence = float(np.mean(all_coherence))
+    avg_coverage = float(np.mean(all_coverage))
+    
+    # Calculate overall score
+    overall_score = np.mean([
+        (avg_silhouette + 1) / 2,  # Normalize -1,1 to 0,1
+        avg_coherence,
+        avg_coverage / 100
+    ])
+    
+    if overall_score >= 0.7:
+        overall_grade = "A - Xuất sắc"
+    elif overall_score >= 0.55:
+        overall_grade = "B - Tốt"
+    elif overall_score >= 0.4:
+        overall_grade = "C - Trung bình"
+    elif overall_score >= 0.25:
+        overall_grade = "D - Cần cải thiện"
+    else:
+        overall_grade = "F - Yếu"
+    
+    return {
+        'success': True,
+        'timestamp': pd.Timestamp.now().isoformat(),
+        'overall': {
+            'score': round(overall_score, 4),
+            'grade': overall_grade,
+            'avg_silhouette': round(avg_silhouette, 4),
+            'avg_coherence': round(avg_coherence, 4),
+            'avg_coverage': round(avg_coverage, 1)
+        },
+        'categories_evaluated': len(category_results),
+        'categories_failed': len(failed_categories),
+        'category_details': category_results,
+        'failed_categories': failed_categories,
+        'best_categories': sorted(category_results, key=lambda x: x['overall_score'], reverse=True)[:5],
+        'worst_categories': sorted(category_results, key=lambda x: x['overall_score'])[:5]
+    }
+

@@ -119,7 +119,7 @@ def render_sidebar():
     
     page = st.sidebar.radio(
         "Select Page",
-        ["Bao Cao Du An", "Phan Tich Khia Canh", "Danh Gia Mo Hinh"],
+        ["Bao Cao Du An", "Phan Tich Khia Canh", "RAG Query", "Danh Gia Mo Hinh"],
         label_visibility="collapsed"
     )
     
@@ -1072,6 +1072,207 @@ def display_evaluation_results(evaluation: dict, analysis_result: dict):
                 st.markdown(f"{i}. {rev[:200]}...")
 
 
+# ============================================================
+# RAG QUERY PAGE
+# ============================================================
+
+def render_rag_query(df):
+    """Render RAG query page."""
+    st.markdown('<div class="main-header">RAG Query - Truy Vấn Nhanh</div>', unsafe_allow_html=True)
+    
+    st.markdown("""
+    Sử dụng RAG (Retrieval-Augmented Generation) để truy vấn nhanh các khía cạnh đã được pre-compute.
+    
+    **Workflow:**
+    1. Pre-compute: Phân tích tất cả categories và lưu vào vector store
+    2. Query: Tìm kiếm semantic và generate response với LLM
+    """)
+    
+    st.markdown("---")
+    
+    # Initialize components
+    try:
+        from src.analysis.rag_pipeline import create_rag_pipeline
+        vector_store, query_engine, precompute_pipeline = create_rag_pipeline(df)
+    except Exception as e:
+        st.error(f"Không thể khởi tạo RAG pipeline: {e}")
+        return
+    
+    # Stats
+    stats = vector_store.get_stats()
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Documents", stats.get('n_documents', 0))
+    with col2:
+        st.metric("Categories", stats.get('n_categories', 0))
+    with col3:
+        st.metric("Status", stats.get('status', 'N/A'))
+    
+    st.markdown("---")
+    
+    # Tabs
+    tab1, tab2 = st.tabs(["Query", "Pre-Compute"])
+    
+    with tab1:
+        st.markdown("### Truy Vấn")
+        
+        if stats.get('n_documents', 0) == 0:
+            st.warning("Chưa có dữ liệu. Hãy chạy Pre-Compute trước.")
+        else:
+            query = st.text_input(
+                "Nhập câu hỏi:", 
+                placeholder="Ví dụ: Khách hàng nghĩ gì về chất lượng âm thanh của tai nghe?"
+            )
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                top_k = st.slider("Số kết quả:", 1, 10, 5)
+            with col2:
+                use_llm = st.checkbox("Sử dụng LLM", value=True)
+            
+            if st.button("Tìm Kiếm", type="primary"):
+                if query:
+                    with st.spinner("Đang tìm kiếm..."):
+                        result = query_engine.query(query, top_k=top_k, use_llm=use_llm)
+                        
+                        if result.get('success'):
+                            st.markdown("### Trả Lời")
+                            st.markdown(result['response'])
+                            
+                            st.markdown("---")
+                            st.markdown("### Aspects Liên Quan")
+                            for asp in result.get('retrieved_aspects', []):
+                                with st.expander(f"{asp['aspect_name']} ({asp['category']}) - Similarity: {asp['similarity']:.3f}"):
+                                    st.markdown(f"**Summary:** {asp['summary']}")
+                                    sentiment = asp.get('sentiment', {})
+                                    st.markdown(f"**Sentiment:** {sentiment.get('interpretation', 'N/A')}")
+                        else:
+                            st.error(result.get('error', 'Query thất bại'))
+                else:
+                    st.warning("Vui lòng nhập câu hỏi")
+    
+    with tab2:
+        st.markdown("### Pre-Compute Aspects")
+        st.markdown("Phân tích tất cả categories và lưu vào vector store.")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            n_aspects = st.number_input("Số aspects per category:", 3, 10, 5, key="rag_n_aspects")
+        with col2:
+            max_cats = st.number_input("Max categories (0=all):", 0, 100, 0, key="rag_max_cats")
+        
+        if st.button("Chạy Pre-Compute", type="primary", key="run_precompute"):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            def update_progress(current, total, category):
+                progress_bar.progress(current / total)
+                status_text.text(f"[{current}/{total}] {category}")
+            
+            with st.spinner("Đang pre-compute..."):
+                result = precompute_pipeline.run_full_pipeline(
+                    n_aspects=int(n_aspects),
+                    max_categories=int(max_cats) if max_cats > 0 else None,
+                    progress_callback=update_progress
+                )
+                
+                if result.get('success'):
+                    st.success(f"Thành công! Đã xử lý {result['n_processed']} categories, {result['total_documents']} documents.")
+                    
+                    if result.get('failed_categories'):
+                        st.warning(f"Thất bại: {len(result['failed_categories'])} categories")
+                else:
+                    st.error(result.get('error', 'Pre-compute thất bại'))
+
+
+def render_full_evaluation(df):
+    """Render full dataset evaluation section."""
+    st.markdown("---")
+    st.markdown("### Đánh Giá Toàn Bộ Dataset")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        n_aspects = st.number_input("Số aspects:", 3, 10, 5, key="full_eval_aspects")
+    with col2:
+        max_cats = st.number_input("Max categories (0=all):", 0, 50, 10, key="full_eval_cats")
+    
+    if st.button("Chạy Full Evaluation", type="secondary", key="run_full_eval"):
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        def update_progress(current, total, category):
+            progress_bar.progress(current / total)
+            status_text.text(f"[{current}/{total}] {category}")
+        
+        with st.spinner("Đang đánh giá toàn bộ dataset... (có thể mất vài phút)"):
+            try:
+                from src.analysis.evaluator import full_dataset_evaluation
+                
+                result = full_dataset_evaluation(
+                    df,
+                    n_aspects=int(n_aspects),
+                    max_categories=int(max_cats) if max_cats > 0 else None,
+                    progress_callback=update_progress
+                )
+                
+                if result.get('success'):
+                    display_full_evaluation_results(result)
+                else:
+                    st.error(result.get('error', 'Đánh giá thất bại'))
+                    
+            except Exception as e:
+                st.error(f"Lỗi: {e}")
+
+
+def display_full_evaluation_results(result: dict):
+    """Display full evaluation results."""
+    st.markdown("---")
+    st.markdown("## Kết Quả Đánh Giá Toàn Dataset")
+    
+    overall = result.get('overall', {})
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Overall Score", f"{overall.get('score', 0):.1%}")
+    with col2:
+        st.metric("Grade", overall.get('grade', 'N/A'))
+    with col3:
+        st.metric("Categories", result.get('categories_evaluated', 0))
+    with col4:
+        st.metric("Failed", result.get('categories_failed', 0))
+    
+    st.markdown("---")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Avg Silhouette", f"{overall.get('avg_silhouette', 0):.4f}")
+    with col2:
+        st.metric("Avg Coherence", f"{overall.get('avg_coherence', 0):.4f}")
+    with col3:
+        st.metric("Avg Coverage", f"{overall.get('avg_coverage', 0):.1f}%")
+    
+    # Best/Worst categories
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### Top 5 Categories")
+        for cat in result.get('best_categories', []):
+            st.markdown(f"- **{cat['category']}**: {cat['overall_score']:.1%} ({cat['grade']})")
+    
+    with col2:
+        st.markdown("### Bottom 5 Categories")
+        for cat in result.get('worst_categories', []):
+            st.markdown(f"- **{cat['category']}**: {cat['overall_score']:.1%} ({cat['grade']})")
+    
+    # Details table
+    with st.expander("Chi tiết theo Category"):
+        details_df = pd.DataFrame(result.get('category_details', []))
+        if not details_df.empty:
+            st.dataframe(details_df[['category', 'n_reviews', 'silhouette', 'coherence', 'coverage', 'overall_score', 'grade']], 
+                        use_container_width=True, hide_index=True)
+
+
 def main():
     """Main application."""
     df = load_data()
@@ -1088,9 +1289,13 @@ def main():
         render_project_report(df)
     elif page == "Phan Tich Khia Canh":
         render_chatbot(df, summarizer)
+    elif page == "RAG Query":
+        render_rag_query(df)
     elif page == "Danh Gia Mo Hinh":
         render_evaluation(df, summarizer)
+        render_full_evaluation(df)
 
 
 if __name__ == "__main__":
     main()
+

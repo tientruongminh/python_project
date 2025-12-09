@@ -401,7 +401,7 @@ Tóm tắt:"""
         logger.info(f"Đang gom cụm thành {n_aspects} nhóm...")
         labels = self._cluster_embeddings(reduced, n_clusters=n_aspects)
         
-        # Bước 5 & 6: Đặt tên và summarize từng cluster
+        # Bước 5, 6, 7: Đặt tên, phân tích sentiment, và summarize từng cluster
         aspects_result = []
         
         for cluster_id in range(n_aspects):
@@ -415,6 +415,10 @@ Tóm tắt:"""
             logger.info(f"Đang đặt tên cho cluster {cluster_id + 1}...")
             aspect_name = self._name_cluster(cluster_reviews)
             
+            # Phân tích sentiment
+            logger.info(f"Đang phân tích sentiment cho cluster {cluster_id + 1}...")
+            sentiment = self._analyze_sentiment(cluster_reviews)
+            
             # Summarize
             logger.info(f"Đang tóm tắt cluster {cluster_id + 1}...")
             summary = self._summarize_reviews(aspect_name, cluster_reviews)
@@ -423,6 +427,7 @@ Tóm tắt:"""
                 'aspect_id': cluster_id + 1,
                 'aspect_name': aspect_name,
                 'review_count': len(cluster_reviews),
+                'sentiment': sentiment,
                 'summary': summary,
                 'sample_reviews': cluster_reviews[:5]
             })
@@ -434,6 +439,82 @@ Tóm tắt:"""
             'total_reviews': len(reviews),
             'n_aspects': n_aspects,
             'aspects': aspects_result
+        }
+    
+    def _analyze_sentiment(self, reviews: List[str]) -> Dict[str, Any]:
+        """
+        Phân tích sentiment cho danh sách reviews.
+        
+        Args:
+            reviews: Danh sách reviews
+            
+        Returns:
+            Dictionary với sentiment scores và interpretation
+        """
+        # Keyword-based sentiment analysis
+        positive_keywords = [
+            'great', 'excellent', 'amazing', 'love', 'perfect', 'good', 'awesome', 
+            'best', 'fantastic', 'wonderful', 'happy', 'satisfied', 'recommend',
+            'tốt', 'hay', 'đẹp', 'thích', 'xuất sắc', 'tuyệt vời'
+        ]
+        negative_keywords = [
+            'bad', 'terrible', 'horrible', 'hate', 'worst', 'awful', 'poor',
+            'broken', 'disappointed', 'waste', 'useless', 'defective', 'garbage',
+            'tệ', 'xấu', 'dở', 'hỏng', 'thất vọng', 'không tốt'
+        ]
+        
+        positive_count = 0
+        negative_count = 0
+        neutral_count = 0
+        
+        for review in reviews:
+            review_lower = review.lower()
+            
+            has_positive = any(kw in review_lower for kw in positive_keywords)
+            has_negative = any(kw in review_lower for kw in negative_keywords)
+            
+            if has_positive and not has_negative:
+                positive_count += 1
+            elif has_negative and not has_positive:
+                negative_count += 1
+            elif has_positive and has_negative:
+                # Mixed - count as neutral
+                neutral_count += 1
+            else:
+                neutral_count += 1
+        
+        total = len(reviews)
+        
+        positive_pct = round(positive_count / total * 100, 1) if total > 0 else 0
+        negative_pct = round(negative_count / total * 100, 1) if total > 0 else 0
+        neutral_pct = round(neutral_count / total * 100, 1) if total > 0 else 0
+        
+        # Determine overall sentiment
+        if positive_pct >= 60:
+            overall = 'positive'
+            interpretation = 'Đa số đánh giá tích cực'
+        elif negative_pct >= 40:
+            overall = 'negative'
+            interpretation = 'Nhiều đánh giá tiêu cực'
+        elif positive_pct > negative_pct:
+            overall = 'mixed_positive'
+            interpretation = 'Hơi nghiêng về tích cực'
+        elif negative_pct > positive_pct:
+            overall = 'mixed_negative'
+            interpretation = 'Hơi nghiêng về tiêu cực'
+        else:
+            overall = 'neutral'
+            interpretation = 'Đánh giá trung lập'
+        
+        return {
+            'overall': overall,
+            'interpretation': interpretation,
+            'positive_pct': positive_pct,
+            'negative_pct': negative_pct,
+            'neutral_pct': neutral_pct,
+            'positive_count': positive_count,
+            'negative_count': negative_count,
+            'neutral_count': neutral_count
         }
     
     def analyze_by_aspect_name(
