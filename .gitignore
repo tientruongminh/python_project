@@ -39,12 +39,10 @@ env/
 .env.*.local
 
 # Data files (large)
-data/*.csv
-outputs/*.csv
+
+
 
 # Logs
-*.log
-outputs/pipeline.log
 
 # Jupyter
 .ipynb_checkpoints/
