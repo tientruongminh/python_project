@@ -344,6 +344,42 @@ Tóm tắt:"""
         except Exception as e:
             logger.error(f"Lỗi summarize: {e}")
             return f"Có {len(reviews)} đánh giá về {aspect_name}."
+
+    def _generate_insights_actions(self, summary: str, context: str = "") -> Dict[str, str]:
+        """
+        Generate insights and actionable recommendations based on summary.
+        """
+        if self.gemini_client is None:
+            return {'insight': '', 'action': ''}
+
+        prompt = f"""Dựa trên nội dung tóm tắt dưới đây về đánh giá sản phẩm ({context}):
+        "{summary}"
+
+        Hãy rút ra:
+        1. INSIGHT (nhận định sâu sắc về nguyên nhân/tâm lý khách hàng) - Tối đa 2 câu.
+        2. ACTION (đề xuất hành động cụ thể cho doanh nghiệp để cải thiện hoặc phát huy) - Tối đa 2 câu.
+
+        Format câu trả lời chính xác theo mẫu sau:
+        INSIGHT: <nội dung insight>
+        ACTION: <nội dung action>
+        """
+        
+        try:
+            response = self.gemini_client.generate(prompt, max_tokens=200)
+            
+            insight = ""
+            action = ""
+            
+            for line in response.split('\n'):
+                if line.startswith('INSIGHT:'):
+                    insight = line.replace('INSIGHT:', '').strip()
+                elif line.startswith('ACTION:'):
+                    action = line.replace('ACTION:', '').strip()
+            
+            return {'insight': insight, 'action': action}
+        except Exception as e:
+            logger.error(f"Lỗi extract insight: {e}")
+            return {'insight': '', 'action': ''}
     
     def analyze_by_num_aspects(
         self,
@@ -423,17 +459,26 @@ Tóm tắt:"""
             logger.info(f"Đang tóm tắt cluster {cluster_id + 1}...")
             summary = self._summarize_reviews(aspect_name, cluster_reviews)
             
+            # Generate Insight & Action
+            logger.info(f"Đang extract insight cluster {cluster_id + 1}...")
+            insight_action = self._generate_insights_actions(summary, f"Khía cạnh: {aspect_name}")
+            
             aspects_result.append({
                 'aspect_id': cluster_id + 1,
                 'aspect_name': aspect_name,
                 'review_count': len(cluster_reviews),
                 'sentiment': sentiment,
                 'summary': summary,
+                'insight': insight_action['insight'],
+                'action': insight_action['action'],
                 'sample_reviews': cluster_reviews[:5]
             })
             
         # Generate OVERALL SUMMARY for Case 1
         overall_summary = ""
+        overall_insight = ""
+        overall_action = ""
+        
         if self.gemini_client and aspects_result:
             try:
                 aspect_summaries = "\n".join([f"- {a['aspect_name']}: {a['summary']}" for a in aspects_result])
@@ -450,6 +495,12 @@ Tóm tắt:"""
                 
                 Tổng quan:"""
                 overall_summary = self.gemini_client.generate(prompt, max_tokens=500)
+                
+                # Insight from Overall Summary
+                ia_overall = self._generate_insights_actions(overall_summary, "Tổng quan sản phẩm")
+                overall_insight = ia_overall['insight']
+                overall_action = ia_overall['action']
+                
             except Exception as e:
                 logger.error(f"Lỗi generate overall summary: {e}")
                 overall_summary = "Không thể tạo tóm tắt tổng quan."
@@ -460,7 +511,9 @@ Tóm tắt:"""
             'category': category,
             'total_reviews': len(reviews),
             'n_aspects': n_aspects,
-            'overall_summary': overall_summary,  # New field
+            'overall_summary': overall_summary,
+            'overall_insight': overall_insight,
+            'overall_action': overall_action,
             'aspects': aspects_result
         }
     
@@ -613,6 +666,9 @@ Tóm tắt:"""
         # Bước 6: Summarize
         summary = self._summarize_reviews(aspect_name, relevant_reviews)
         
+        # Bước 7: Generate Insight & Action
+        insight_action = self._generate_insights_actions(summary, f"Khía cạnh: {aspect_name}")
+        
         # Tính sentiment đơn giản
         positive_keywords = ['tốt', 'hay', 'đẹp', 'great', 'good', 'excellent', 'love', 'amazing']
         negative_keywords = ['tệ', 'xấu', 'dở', 'bad', 'terrible', 'hate', 'poor', 'broken']
@@ -638,6 +694,8 @@ Tóm tắt:"""
                 'neutral_pct': round((total - positive_count - negative_count) / total * 100, 1) if total > 0 else 0
             },
             'summary': summary,
+            'insight': insight_action['insight'],
+            'action': insight_action['action'],
             'sample_reviews': [
                 {'review': relevant_reviews[i], 'similarity': round(relevant_similarities[i], 3)}
                 for i in range(min(5, len(relevant_reviews)))

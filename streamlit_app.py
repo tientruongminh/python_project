@@ -649,8 +649,17 @@ def display_case1_result(result):
             st.metric("Sản Phẩm", result.get('product', 'N/A'))
             
     # HIỂN THỊ TÓM TẮT CHUNG (MỚI)
+    # HIỂN THỊ TÓM TẮT CHUNG (MỚI)
     if result.get('overall_summary'):
         st.info(f"**Tóm Tắt Tổng Quan:**\n\n{result.get('overall_summary')}")
+        
+    # HIỂN THỊ INSIGHT & ACTION TỔNG QUAN
+    if result.get('overall_insight') or result.get('overall_action'):
+        c1, c2 = st.columns(2)
+        with c1:
+            st.warning(f"**💡 Insight Chính:**\n\n{result.get('overall_insight', 'N/A')}")
+        with c2:
+            st.success(f"**🚀 Action Đề Xuất:**\n\n{result.get('overall_action', 'N/A')}")
     
     st.markdown("---")
     st.markdown("### Chi Tiết Từng Khía Cạnh")
@@ -680,6 +689,11 @@ def display_case1_result(result):
             with col2:
                 st.markdown(f"**Tóm tắt đại diện:**")
                 st.success(aspect['summary'])
+                
+                # Show Insight/Action per Aspect
+                if aspect.get('insight') or aspect.get('action'):
+                     st.markdown(f"**💡 Insight:** {aspect.get('insight', '')}")
+                     st.markdown(f"**🚀 Action:** {aspect.get('action', '')}")
             
             # Sample reviews
             if aspect.get('sample_reviews'):
@@ -794,6 +808,16 @@ def display_case2_result(result):
     with col3:
         st.metric("Sentiment Negative", f"{sentiment.get('negative_pct', 0)}%")
         
+    st.markdown("---")
+    
+    # Insight & Action (New)
+    if result.get('insight') or result.get('action'):
+        c1, c2 = st.columns(2)
+        with c1:
+            st.warning(f"**💡 Insight:**\n\n{result.get('insight', 'N/A')}")
+        with c2:
+            st.success(f"**🚀 Action:**\n\n{result.get('action', 'N/A')}")
+            
     st.markdown("---")
     
     # Details (Cái riêng)
