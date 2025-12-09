@@ -431,6 +431,28 @@ Tóm tắt:"""
                 'summary': summary,
                 'sample_reviews': cluster_reviews[:5]
             })
+            
+        # Generate OVERALL SUMMARY for Case 1
+        overall_summary = ""
+        if self.gemini_client and aspects_result:
+            try:
+                aspect_summaries = "\n".join([f"- {a['aspect_name']}: {a['summary']}" for a in aspects_result])
+                prompt = f"""Dựa trên các phân tích khía cạnh sau đây của sản phẩm, hãy viết một ĐOẠN VĂN TỔNG QUAN (3-5 câu) tóm tắt bức tranh chung.
+                
+                Nội dung chi tiết các khía cạnh:
+                {aspect_summaries}
+                
+                Yêu cầu:
+                - Viết bằng tiếng Việt
+                - Tổng hợp các điểm chính
+                - Nêu rõ xu hướng chung (tích cực/tiêu cực)
+                - Không liệt kê rườm rà, hãy viết thành văn.
+                
+                Tổng quan:"""
+                overall_summary = self.gemini_client.generate(prompt, max_tokens=500)
+            except Exception as e:
+                logger.error(f"Lỗi generate overall summary: {e}")
+                overall_summary = "Không thể tạo tóm tắt tổng quan."
         
         return {
             'success': True,
@@ -438,6 +460,7 @@ Tóm tắt:"""
             'category': category,
             'total_reviews': len(reviews),
             'n_aspects': n_aspects,
+            'overall_summary': overall_summary,  # New field
             'aspects': aspects_result
         }
     

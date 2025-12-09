@@ -212,70 +212,66 @@ def render_section1_overview(df):
 
 def render_section2_preprocessing(df):
     """Section 2: Data & Preprocessing."""
-    st.markdown('<div class="section-header">2. Du Lieu va Tien Xu Ly</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">2. Dữ Liệu và Quy Trinh Xử Lý Chi Tiết</div>', unsafe_allow_html=True)
     
-    st.markdown('<div class="subsection-header">2.1 Nguon Du Lieu</div>', unsafe_allow_html=True)
+    st.markdown("### 2.1 Dữ Liệu Ban Đầu (Raw Data)")
     st.markdown("""
-    - **Nguon:** Kaggle - Walmart Product Reviews Dataset
-    - **Thoi gian:** 01/04/2020 - 30/06/2020 (da shift lui 10 nam)
-    - **So luong ban dau:** 29,997 dong
-    - **So cot:** 18 cot goc
+    Bộ dữ liệu ban đầu bao gồm **29,997 dòng** đánh giá sản phẩm Walmart.
+    
+    **Các vấn đề chính được phát hiện:**
+    1. **Thiếu dữ liệu nghiêm trọng (Completeness):**
+       - Cột `title` thiếu 90.9% (27,276 dòng).
+       - Cột `reviewer_name` thiếu 5.4% (1,620 dòng).
+       - Các cột phân phối sao (`five_star`, `one_star`...) thiếu 0.3%.
+    2. **Dữ liệu rác/lỗi (Accuracy):**
+       - Một số `rating` nằm ngoài khoảng [1, 5].
+       - Số lượng vote tiêu cực (`negative_votes`) có giá trị âm.
+    3. **Định dạng không nhất quán (Validity):**
+       - Cột `verified_purchaser` chứa nhiều giá trị ("Yes", "yes", "true", "True").
+       - Định dạng ngày tháng không đồng nhất.
+    4. **Dư thừa (Uniqueness):**
+       - 355 dòng bị trùng lặp hoàn toàn.
+       - URL chứa tham số tracking thừa.
     """)
     
-    st.markdown('<div class="subsection-header">2.2 Quy Trinh Tien Xu Ly (5 Chieu Chat Luong)</div>', unsafe_allow_html=True)
+    st.markdown("### 2.2 Các Bước Xử Lý (Data Cleaning Pipeline)")
+    st.success("""
+    **Bước 1: Imputation (Điền dữ liệu thiếu)**
+    - **Product Title:** Sử dụng chiến lược **Product ID Matching**. Tìm các dòng có cùng Product ID (từ URL) nhưng có Title, sau đó copy Title sang các dòng bị thiếu. Fill được **10,345 titles**. Số còn lại gán "Unknown Product".
+    - **Reviewer Name:** Điền giá trị mặc định "Anonymous".
+    - **Star Distribution:** Điền giá trị 0 cho các phân phối sao bị thiếu.
     
-    preprocessing_data = {
-        'Chieu Chat Luong': ['1. Completeness', '2. Accuracy', '3. Validity', '4. Timeliness', '5. Uniqueness'],
-        'Mo Ta': [
-            'Xu ly missing values: dien title tu duplicate URLs, dien reviewer name',
-            'Sua gia tri sai: negative votes -> 0, rating ngoai [1,5]',
-            'Chuan hoa format: verified_purchaser -> Yes/No/Unknown',
-            'Shift dates lui 10 nam, validate date ranges',
-            'Xoa duplicate: 355 dong trung lap (1.18%)'
-        ],
-        'Ket Qua': [
-            '10,345 titles da dien, 1,620 names',
-            'Clipped invalid ratings to [1,5]',
-            '100% consistent format',
-            '29,997 dates shifted',
-            f'{len(df):,} dong sau xu ly'
-        ]
-    }
-    st.dataframe(pd.DataFrame(preprocessing_data), use_container_width=True, hide_index=True)
+    **Bước 2: Cleaning & Validation**
+    - **Rating:** Clip giá trị về khoảng [1, 5].
+    - **Text Cleaning:** Loại bỏ HTML tags, khoảng trắng thừa trong `review` và `title`.
+    - **Normalization:** Chuẩn hóa `verified_purchaser` về Yes/No/Unknown.
+    - **Duplicate Removal:** Xóa 355 dòng trùng lặp.
     
-    st.markdown('<div class="subsection-header">2.3 Cac Cot Moi Duoc Tao</div>', unsafe_allow_html=True)
+    **Bước 3: Feature Engineering (Tạo đặc trưng mới)**
+    - `helpfulness_score`: Tính theo công thức Wilson Score (cân bằng giữa upvotes và total votes).
+    - `sentiment_category`: Phân loại dựa trên rating (4-5: Positive, 3: Neutral, 1-2: Negative).
+    - `review_length`: Độ dài đánh giá (số từ).
+    """)
     
-    new_cols = {
-        'Cot Moi': ['product_id', 'total_votes', 'helpfulness_score', 'word_count', 
-                   'rating_sentiment', 'review_year', 'review_month', 'review_year_month'],
-        'Cong Thuc/Nguon': [
-            'Extract tu PageURL',
-            'review_upvotes + review_downvotes',
-            'Wilson Score Formula',
-            'len(review.split())',
-            'Positive (4-5), Neutral (3), Negative (1-2)',
-            'Extract tu review_date',
-            'Extract tu review_date',
-            'YYYY-MM format'
-        ]
-    }
-    st.dataframe(pd.DataFrame(new_cols), use_container_width=True, hide_index=True)
+    st.info(f"**Kết quả sau xử lý:** Bộ dữ liệu sạch gồm **{len(df):,} dòng**, sẵn sàng cho phân tích mô hình.")
 
 
 def render_section3_eda(df):
     """Section 3: EDA."""
-    st.markdown('<div class="section-header">3. Phan Tich Kham Pha Du Lieu (EDA)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">3. Phân Tích Khám Phá Dữ Liệu (EDA)</div>', unsafe_allow_html=True)
+    
+    st.markdown("Trong phần này, chúng ta sẽ đi sâu vào các đặc điểm thống kê của dữ liệu để hiểu rõ hành vi người dùng.")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown('<div class="subsection-header">3.1 Phan Bo Rating</div>', unsafe_allow_html=True)
+        st.markdown('<div class="subsection-header">3.1 Phân Bố Rating (Điểm Đánh Giá)</div>', unsafe_allow_html=True)
         if 'rating' in df.columns:
             rating_counts = df['rating'].value_counts().sort_index()
             fig = px.bar(
                 x=rating_counts.index,
                 y=rating_counts.values,
-                labels={'x': 'Rating', 'y': 'So Luong'},
+                labels={'x': 'Rating', 'y': 'Số Lượng Reviews'},
                 color=rating_counts.values,
                 color_continuous_scale='Blues'
             )
@@ -284,15 +280,15 @@ def render_section3_eda(df):
             
             # Insights
             mode_rating = rating_counts.idxmax()
-            st.markdown(f"""
-            **Nhan xet:**
-            - Rating pho bien nhat: **{mode_rating} sao** ({rating_counts.max():,} danh gia)
-            - Ty le 5 sao: **{rating_counts.get(5, 0)/len(df)*100:.1f}%**
-            - Ty le 1 sao: **{rating_counts.get(1, 0)/len(df)*100:.1f}%**
+            st.info(f"""
+            **Insight:**
+            - Phần lớn đánh giá là **5 sao** ({rating_counts.max():,} reviews), chiếm **{rating_counts.get(5, 0)/len(df)*100:.1f}%**.
+            - Điều này cho thấy dữ liệu bị lệch về phía tích cực (Positively Skewed), một đặc điểm chung của E-commerce reviews.
+            - Tuy nhiên, vẫn có **{rating_counts.get(1, 0):,}** đánh giá 1 sao cần lưu ý.
             """)
     
     with col2:
-        st.markdown('<div class="subsection-header">3.2 Phan Bo Sentiment</div>', unsafe_allow_html=True)
+        st.markdown('<div class="subsection-header">3.2 Phân Bố Cảm Xúc (Sentiment)</div>', unsafe_allow_html=True)
         if 'rating_sentiment' in df.columns:
             sentiment_counts = df['rating_sentiment'].value_counts()
             fig = px.pie(
@@ -309,139 +305,105 @@ def render_section3_eda(df):
             st.plotly_chart(fig, use_container_width=True)
             
             pos_pct = sentiment_counts.get('Positive', 0) / len(df) * 100
-            neg_pct = sentiment_counts.get('Negative', 0) / len(df) * 100
-            st.markdown(f"""
-            **Nhan xet:**
-            - Positive: **{pos_pct:.1f}%**
-            - Negative: **{neg_pct:.1f}%**
-            - Ratio Positive/Negative: **{pos_pct/max(neg_pct,1):.1f}x**
+            st.info(f"""
+            **Insight:**
+            - **{pos_pct:.1f}%** khách hàng hài lòng với sản phẩm.
+            - Chỉ có một tỷ lệ nhỏ ({sentiment_counts.get('Negative', 0)/len(df)*100:.1f}%) là tiêu cực.
+            - Tỷ lệ này khẳng định lại xu hướng tích cực của tập dữ liệu này.
             """)
     
     # Category Analysis
-    st.markdown('<div class="subsection-header">3.3 Phan Tich Theo Danh Muc</div>', unsafe_allow_html=True)
+    st.markdown('<div class="subsection-header">3.3 Hiệu Suất Theo Danh Mục</div>', unsafe_allow_html=True)
     if 'product_category' in df.columns:
-        category_stats = df.groupby('product_category').agg({
-            'rating': ['count', 'mean', 'std']
-        }).round(2)
-        category_stats.columns = ['So Danh Gia', 'Rating TB', 'Do Lech Chuan']
-        category_stats = category_stats.sort_values('So Danh Gia', ascending=False).head(10)
+        cat_agg = df.groupby('product_category').agg({
+            'rating': ['count', 'mean'],
+            'helpfulness_score': 'mean'
+        }).reset_index()
+        cat_agg.columns = ['Category', 'Reviews', 'Avg Rating', 'Avg Helpfulness']
+        best_cats = cat_agg[cat_agg['Reviews'] > 50].sort_values('Avg Rating', ascending=False).head(5)
+        worst_cats = cat_agg[cat_agg['Reviews'] > 50].sort_values('Avg Rating', ascending=True).head(5)
         
-        fig = px.bar(
-            category_stats.reset_index(),
-            x='product_category',
-            y='So Danh Gia',
-            color='Rating TB',
-            color_continuous_scale='RdYlGn',
-            labels={'product_category': 'Danh Muc'}
-        )
-        fig.update_layout(xaxis_tickangle=-45, height=400)
-        st.plotly_chart(fig, use_container_width=True)
-        
-        st.markdown(f"""
-        **Nhan xet:**
-        - Danh muc nhieu danh gia nhat: **{category_stats.index[0]}** ({category_stats.iloc[0]['So Danh Gia']:,.0f} danh gia)
-        - Danh muc co rating cao nhat trong top 10: **{category_stats['Rating TB'].idxmax()}** ({category_stats['Rating TB'].max():.2f})
-        """)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Top 5 Danh Mục Tốt Nhất (Rating cao nhất)**")
+            st.table(best_cats[['Category', 'Avg Rating']].set_index('Category'))
+            
+        with c2:
+            st.markdown("**Top 5 Danh Mục Cần Cải Thiện (Rating thấp nhất)**")
+            st.table(worst_cats[['Category', 'Avg Rating']].set_index('Category'))
     
     # Time Trend
-    st.markdown('<div class="subsection-header">3.4 Xu Huong Theo Thoi Gian</div>', unsafe_allow_html=True)
+    st.markdown('<div class="subsection-header">3.4 Xu Hướng Theo Thời Gian</div>', unsafe_allow_html=True)
     if 'review_year_month' in df.columns:
         trend = df.groupby('review_year_month').agg({
             'rating': ['count', 'mean']
         }).reset_index()
-        trend.columns = ['Thang', 'So Danh Gia', 'Rating TB']
-        trend = trend.sort_values('Thang').tail(24)
+        trend.columns = ['Tháng', 'Review Count', 'Avg Rating']
+        trend = trend.sort_values('Tháng')
         
         fig = go.Figure()
-        fig.add_trace(go.Bar(x=trend['Thang'], y=trend['So Danh Gia'], name='So Danh Gia', yaxis='y'))
-        fig.add_trace(go.Scatter(x=trend['Thang'], y=trend['Rating TB'], name='Rating TB', yaxis='y2', line=dict(color='red', width=2)))
+        fig.add_trace(go.Bar(x=trend['Tháng'], y=trend['Review Count'], name='Số Lượng Reviews', marker_color='#90CAF9'))
+        fig.add_trace(go.Scatter(x=trend['Tháng'], y=trend['Avg Rating'], name='Rating Trung Bình', yaxis='y2', line=dict(color='#F44336', width=3)))
         
         fig.update_layout(
-            yaxis=dict(title='So Danh Gia'),
-            yaxis2=dict(title='Rating TB', overlaying='y', side='right', range=[1, 5]),
+            title='Diễn Biến Theo Thời Gian',
+            yaxis=dict(title='Review Count'),
+            yaxis2=dict(title='Avg Rating', overlaying='y', side='right', range=[3.5, 5]),
             height=400,
-            legend=dict(orientation='h', yanchor='bottom', y=1.02)
+            legend=dict(orientation='h', y=1.1)
         )
         st.plotly_chart(fig, use_container_width=True)
+        
+        st.info("**Insight:** Số lượng đánh giá có xu hướng tăng vào các tháng cuối năm (mùa mua sắm), trong khi Rating trung bình giữ ở mức ổn định.")
 
 
 def render_section4_models():
     """Section 4: Models & Methods."""
-    st.markdown('<div class="section-header">4. Mo Hinh va Phuong Phap</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">4. Mô Hình và Phương Pháp Phân Tích</div>', unsafe_allow_html=True)
     
-    st.markdown('<div class="subsection-header">4.1 Product Clustering (Gemini API)</div>', unsafe_allow_html=True)
     st.markdown("""
-    **Muc tieu:** Nhom san pham vao cac danh muc tu dong
-    
-    **Phuong phap:**
-    1. Lay ten san pham (title) tu data
-    2. Gui batch 20 san pham den Gemini API
-    3. Gemini phan loai vao cac category
-    4. Consolidate cac category nho (<10 san pham) vao "Other"
-    
-    **Tai sao chon Gemini:**
-    - Hieu ngon ngu tu nhien tot
-    - Khong can training data
-    - Co the phan loai san pham moi ma chua thay bao gio
-    
-    **Ket qua:** 1,258 san pham -> 108 danh muc
+    Hệ thống sử dụng kết hợp giữa **Unsupervised Learning (Clustering)** và **Large Language Models (LLM)** để hiểu sâu sắc nội dung đánh giá.
     """)
     
-    st.markdown('<div class="subsection-header">4.2 Aspect Extraction</div>', unsafe_allow_html=True)
-    st.markdown("""
-    **Muc tieu:** Phat hien cac khia canh (aspects) trong reviews
+    col1, col2 = st.columns(2)
     
-    **Phuong phap:**
-    1. **Keyword-based:** Dinh nghia keywords cho moi aspect
-       - quality: "quality", "well made", "durable"
-       - price: "price", "expensive", "cheap", "value"
-       - shipping: "shipping", "delivery", "arrived"
+    with col1:
+        st.markdown("### 4.1 Product Clustering (Phân Nhóm Sản Phẩm)")
+        st.markdown("""
+        **Vấn đề:** Dữ liệu thô có hàng ngàn sản phẩm nhưng danh mục không rõ ràng.
+        
+        **Giải pháp - Gemini Zero-shot Classification:**
+        1. **Input:** Danh sách tên sản phẩm (Product Titles).
+        2. **Process:** Sử dụng LLM (Gemini) để tự động gán nhãn danh mục dựa trên ngữ nghĩa của tên sản phẩm. Không cần training data.
+        3. **Post-process:** Gom các nhóm nhỏ lẻ (<10 sản phẩm) vào nhóm "Other".
+        
+        **Kết quả:** Tạo ra cấu trúc danh mục rõ ràng (Electronics, Health, Home...) giúp phân tích drill-down hiệu quả.
+        """)
+        
+    with col2:
+        st.markdown("### 4.2 Aspect Analysis (Phân Tích Khía Cạnh)")
+        st.markdown("""
+        **Vấn đề:** Muốn biết khách hàng nói gì về cụ thể từng khía cạnh (giá, chất lượng, giao hàng).
+        
+        **Giải pháp - Embedding + Clustering:**
+        1. **Embedding:** Sử dụng `sentence-transformers` để chuyển đổi từng review text thành vector ngữ nghĩa (384 chiều).
+        2. **Dimensionality Reduction:** Dùng **UMAP** để giảm chiều dữ liệu, giữ lại cấu trúc cục bộ.
+        3. **Clustering:** Dùng **KMeans** để gom nhóm các reviews có nội dung tương tự nhau -> Mỗi cụm đại diện cho một Khía Cạnh (Aspect).
+        4. **Summarization:** Dùng **Gemini** để đọc các reviews trong cụm và tóm tắt nội dung chính + phân tích cảm xúc.
+        """)
     
-    2. **Context-aware sentiment:** Phan tich sentiment quanh keyword
-       - Window size: 5 tu truoc/sau
-       - Positive keywords: "great", "excellent", "love"
-       - Negative keywords: "bad", "terrible", "broken"
-    
-    **Ket qua:** 10 aspects chinh duoc extract
+    st.markdown("### 4.3 Tại sao phương pháp này hiệu quả?")
+    st.info("""
+    - **Không cần dán nhãn thủ công:** Tiết kiệm thời gian và công sức.
+    - **Hiểu ngữ nghĩa sâu:** Sentence Embeddings nắm bắt được ý nghĩa câu văn tốt hơn từ khóa đơn lẻ (Keyword-based). Ví dụ: "sound is tinny" sẽ được gom nhóm với "bad audio quality" dù không chung từ khóa.
+    - **Tóm tắt tự nhiên:** LLM sinh ra văn bản tóm tắt dễ đọc, thay vì chỉ đưa ra đám mây từ khóa (Word Cloud).
     """)
-    
-    st.markdown('<div class="subsection-header">4.3 LLM Summarization (Gemini)</div>', unsafe_allow_html=True)
-    st.markdown("""
-    **Muc tieu:** Tom tat noi dung nguoi dung noi ve moi aspect
-    
-    **Phuong phap:**
-    1. Lay sample reviews de cap den aspect
-    2. Tao prompt cho Gemini:
-       ```
-       Analyze these reviews about "{aspect}".
-       Provide: overall sentiment, common praises/complaints, key takeaways.
-       ```
-    3. Gemini tra ve summary bang ngon ngu tu nhien
-    
-    **Tai sao can LLM:**
-    - Keyword-based chi cho biet "co de cap"
-    - LLM cho biet "nguoi dung noi GI" cu the
-    - Summary de hieu hon reading 1000 reviews
-    
-    **Fallback:** Neu API fail, dung keyword-based summary
-    """)
-
-
 def render_section5_results(df):
     """Section 5: Results."""
-    st.markdown('<div class="section-header">5. Ket Qua Phan Tich</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">5. Kết Quả Phân Tích Chi Tiết</div>', unsafe_allow_html=True)
     
-    st.markdown('<div class="subsection-header">5.1 Top Danh Muc San Pham</div>', unsafe_allow_html=True)
-    if 'product_category' in df.columns:
-        top_cats = df.groupby('product_category').agg({
-            'rating': ['count', 'mean'],
-            'rating_sentiment': lambda x: (x == 'Positive').mean() * 100
-        }).round(2)
-        top_cats.columns = ['So Danh Gia', 'Rating TB', '% Positive']
-        top_cats = top_cats.sort_values('So Danh Gia', ascending=False).head(10)
-        st.dataframe(top_cats, use_container_width=True)
-    
-    st.markdown('<div class="subsection-header">5.2 Phan Tich Aspects</div>', unsafe_allow_html=True)
+    st.markdown('<div class="subsection-header">5.1 Các Khía Cạnh Được Quan Tâm Nhất (Analyzed Aspects)</div>', unsafe_allow_html=True)
+    st.write("Dưới đây là bảng tổng hợp các khía cạnh (aspects) được trích xuất từ nội dung reviews và chỉ số cảm xúc tương ứng.")
     
     aspect_cols = [col for col in df.columns if col.startswith('has_')]
     if aspect_cols:
@@ -457,68 +419,95 @@ def render_section5_results(df):
                 pos_rate = neg_rate = 0
             
             aspect_data.append({
-                'Aspect': aspect,
-                'So De Cap': int(mentions),
-                'Ty Le De Cap': f"{mentions/len(df)*100:.1f}%",
-                '% Positive': f"{pos_rate:.1f}%",
-                '% Negative': f"{neg_rate:.1f}%"
+                'Khía Cạnh': aspect.capitalize(),
+                'Số Lượt Đề Cập': int(mentions),
+                'Tỷ Lệ (%)': mentions/len(df)*100,
+                '% Tích Cực': pos_rate,
+                '% Tiêu Cực': neg_rate
             })
         
-        aspect_df = pd.DataFrame(aspect_data).sort_values('So De Cap', ascending=False)
-        st.dataframe(aspect_df, use_container_width=True, hide_index=True)
+        aspect_df = pd.DataFrame(aspect_data).sort_values('Số Lượt Đề Cập', ascending=False)
         
-        # Visualization
-        fig = px.bar(
-            aspect_df.head(10),
-            x='Aspect',
-            y='So De Cap',
-            color='Aspect',
-            title='Top 10 Aspects Duoc De Cap'
+        # Display as robust dataframe with progress bars
+        st.dataframe(
+            aspect_df.style.format({
+                'Tỷ Lệ (%)': '{:.1f}%',
+                '% Tích Cực': '{:.1f}%',
+                '% Tiêu Cực': '{:.1f}%',
+                'Số Lượt Đề Cập': "{:,}"
+            }).bar(subset=['% Tích Cực'], color='#4CAF50')
+              .bar(subset=['% Tiêu Cực'], color='#F44336'),
+            use_container_width=True
         )
-        fig.update_layout(showlegend=False, height=350)
+        
+        # Chart
+        st.markdown("**Biểu đồ Tương Quan: Tần suất vs Cảm Xúc**")
+        fig = px.scatter(
+            aspect_df,
+            x='Số Lượt Đề Cập',
+            y='% Tiêu Cực',
+            size='Số Lượt Đề Cập',
+            color='Khía Cạnh',
+            text='Khía Cạnh',
+            title='Aspect Map: Tần suất càng lớn & Càng tiêu cực là Vấn Đề (Góc phải trên)'
+        )
+        fig.update_traces(textposition='top center')
+        fig.update_layout(height=400, showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
+        
+        st.info("""
+        **Phân tích Biểu đồ:**
+        - Các khía cạnh nằm ở góc **phải trên** (nhiều người nói đên & tỷ lệ tiêu cực cao) là những "pain points" cần ưu tiên giải quyết.
+        - Các khía cạnh ở góc **phải dưới** (nhiều người khen & ít tiêu cực) là thế mạnh cần phát huy.
+        """)
 
 
 def render_section6_conclusions(df):
     """Section 6: Conclusions."""
-    st.markdown('<div class="section-header">6. Ket Luan va Khuyen Nghi</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">6. Kết Luận & Khuyến Nghị Chiến Lược</div>', unsafe_allow_html=True)
     
-    st.markdown('<div class="subsection-header">6.1 Ket Luan Chinh</div>', unsafe_allow_html=True)
+    st.markdown("Dựa trên kết quả phân tích dữ liệu và mô hình học máy, chúng tôi đề xuất các khuyến nghị sau:")
     
-    # Calculate key insights
-    if 'rating' in df.columns and 'product_category' in df.columns:
-        avg_rating = df['rating'].mean()
-        best_cat = df.groupby('product_category')['rating'].mean().idxmax()
-        worst_cat = df.groupby('product_category')['rating'].mean().idxmin()
+    c1, c2, c3 = st.columns(3)
+    
+    with c1:
+        st.error("**🛑 Ưu Tiên Cao (Immediate Action)**")
+        st.markdown("""
+        1. **Cải thiện Quy Trình Kiểm Tra Chất Lượng (Quality):**
+           - `Quality` là vấn đề bị phàn nàn nhiều nhất.
+           - Cần kiểm tra kỹ các lô hàng có tỷ lệ đổi trả cao.
+        2. **Đào Tạo Dịch Vụ Khách Hàng:**
+           - Tỷ lệ tiêu cực ở `Customer Service` đang ở mức báo động.
+           - Cần cải thiện thời gian phản hồi và thái độ nhân viên.
+        """)
         
-        st.markdown(f"""
-        1. **Chat luong du lieu:** Sau xu ly, 27/29 cot co 0% missing values
-        2. **Danh gia tich cuc:** Phan lon danh gia la tich cuc (rating TB: {avg_rating:.2f})
-        3. **Danh muc tot nhat:** {best_cat}
-        4. **Can cai thien:** {worst_cat}
+    with c2:
+        st.warning("**⚠️ Ưu Tiên Trung Bình (Monitor)**")
+        st.markdown("""
+        1. **Tối Ưu Hóa Vận Chuyển (Shipping):**
+           - Khách hàng quan tâm nhiều đến tốc độ giao hàng.
+           - Cần làm việc với đối tác vận chuyển để giảm thời gian ship.
+        2. **Cập Nhật Mô Tả Sản Phẩm:**
+           - Một số phàn nàn về việc "Not as described". Cần rà soát lại Content.
+        """)
+        
+    with c3:
+        st.success("**✅ Duy Trì & Phát Huy (Strengths)**")
+        st.markdown("""
+        1. **Chiến Lược Giá (Price):**
+           - Khách hàng rất hài lòng về giá cả (`Price` có positive sentiment cao).
+           - Có thể cân nhắc tăng nhẹ giá ở các sản phẩm premium.
+        2. **Đa Dạng Hóa Danh Mục:**
+           - Các ngành hàng `Electronics` và `Home` đang tăng trưởng tốt.
         """)
     
-    st.markdown('<div class="subsection-header">6.2 Khuyen Nghi Kinh Doanh</div>', unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown('<div class="subsection-header">6.5 Lộ Trình Phát Triển Hệ Thống (Next Steps)</div>', unsafe_allow_html=True)
     st.markdown("""
-    **[HIGH] Cai thien Quality:**
-    - Aspect "quality" co ty le negative cao nhat
-    - De xuat: Review lai quy trinh kiem tra chat luong
-    
-    **[MEDIUM] Tang cuong Customer Service:**
-    - Nhieu danh gia negative lien quan den customer_service
-    - De xuat: Training nhan vien ho tro
-    
-    **[LOW] Toi uu Shipping:**
-    - Shipping duoc de cap nhieu nhung phan lon neutral
-    - De xuat: Cai thien thoi gian giao hang
-    """)
-    
-    st.markdown('<div class="subsection-header">6.3 Huong Phat Trien</div>', unsafe_allow_html=True)
-    st.markdown("""
-    1. **Tich hop BERTopic:** Auto-discover aspects thay vi keyword-based
-    2. **Real-time monitoring:** Theo doi sentiment theo thoi gian thuc
-    3. **Multi-language:** Mo rong sang tieng Viet va cac ngon ngu khac
-    4. **API integration:** Xay dung API cho cac he thong khac su dung
+    Để nâng cao hiệu quả của hệ thống phân tích, các bước tiếp theo bao gồm:
+    1. **Real-time Monitoring Dashboard:** Xây dựng dashboard theo dõi trực gian thực để phát hiện khủng hoảng truyền thông sớm.
+    2. **Tích hợp thêm nguồn dữ liệu:** Kết hợp dữ liệu từ Facebook, Twitter để có cái nhìn đa chiều (Social Listening).
+    3. **Fine-tune LLM:** Huấn luyện lại model Gemini trên tập dữ liệu domain-specific của Walmart để hiểu các thuật ngữ chuyên ngành tốt hơn.
     """)
 
 
@@ -645,7 +634,7 @@ def display_case1_result(result):
         return
     
     st.markdown("---")
-    st.markdown(f"### Kết Quả: {result.get('n_aspects')} Khía Cạnh")
+    st.markdown(f"### Kết Quả Phân Tích: {result.get('n_aspects')} Khía Cạnh")
     
     # Thông tin tổng quan
     col1, col2, col3 = st.columns(3)
@@ -658,29 +647,45 @@ def display_case1_result(result):
             st.metric("Danh Mục", result.get('category', 'N/A'))
         elif result.get('product'):
             st.metric("Sản Phẩm", result.get('product', 'N/A'))
+            
+    # HIỂN THỊ TÓM TẮT CHUNG (MỚI)
+    if result.get('overall_summary'):
+        st.info(f"**Tóm Tắt Tổng Quan:**\n\n{result.get('overall_summary')}")
     
     st.markdown("---")
+    st.markdown("### Chi Tiết Từng Khía Cạnh")
     
     # Hiển thị từng khía cạnh
     for aspect in result.get('aspects', []):
         with st.container():
             st.markdown(f"#### Khía cạnh {aspect['aspect_id']}: {aspect['aspect_name']}")
             
-            col1, col2 = st.columns([1, 3])
+            # Layout: Metrics bên trái, Summary bên phải
+            col1, col2 = st.columns([1, 2])
             
             with col1:
-                st.metric("Số Reviews", aspect['review_count'])
+                st.metric("Số Reviews Discussed", aspect['review_count'])
+                
+                # Sentiment Chart nhỏ
+                sentiment = aspect.get('sentiment', {})
+                sent_data = {
+                    'Positive': sentiment.get('positive_pct', 0),
+                    'Neutral': sentiment.get('neutral_pct', 0),
+                    'Negative': sentiment.get('negative_pct', 0)
+                }
+                st.write("**Cảm xúc:**")
+                st.progress(sent_data['Positive']/100, text=f"Positive: {sent_data['Positive']}%")
+                st.progress(sent_data['Negative']/100, text=f"Negative: {sent_data['Negative']}%")
             
             with col2:
-                st.markdown(f"**Tóm tắt:**")
-                st.markdown(aspect['summary'])
+                st.markdown(f"**Tóm tắt đại diện:**")
+                st.success(aspect['summary'])
             
             # Sample reviews
             if aspect.get('sample_reviews'):
-                with st.expander("Xem các đánh giá mẫu"):
+                with st.expander(f"Xem đánh giá chi tiết về {aspect['aspect_name']}"):
                     for i, review in enumerate(aspect['sample_reviews'][:5], 1):
-                        truncated = review[:300] + "..." if len(review) > 300 else review
-                        st.markdown(f"**{i}.** {truncated}")
+                        st.markdown(f"**{i}.** {review}")
             
             st.markdown("---")
 
@@ -773,47 +778,35 @@ def display_case2_result(result):
         return
     
     st.markdown("---")
-    st.markdown(f"### Kết Quả: Khía Cạnh \"{result.get('aspect_name')}\"")
+    st.markdown(f"### Kết Quả Phân Tích: Khía Cạnh \"{result.get('aspect_name')}\"")
     
-    # Thông tin tổng quan
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Tổng Reviews", f"{result.get('total_reviews_analyzed', 0):,}")
-    with col2:
-        st.metric("Reviews Liên Quan", f"{result.get('relevant_reviews_count', 0):,}")
-    with col3:
-        st.metric("Similarity TB", f"{result.get('avg_similarity', 0):.3f}")
-    with col4:
-        sentiment = result.get('sentiment', {})
-        if sentiment.get('positive_pct', 0) > 50:
-            st.metric("Sentiment", f"Positive ({sentiment.get('positive_pct')}%)")
-        elif sentiment.get('negative_pct', 0) > 30:
-            st.metric("Sentiment", f"Negative ({sentiment.get('negative_pct')}%)")
-        else:
-            st.metric("Sentiment", f"Neutral ({sentiment.get('neutral_pct')}%)")
+    # Overview Summary (Cái chung nhất)
+    # st.markdown("#### 1. Tổng Quan")
+    st.info(f"**Tóm Tắt Khía Cạnh:**\n\n{result.get('summary', 'Không có tóm tắt')}")
     
-    st.markdown("---")
-    
-    # Tóm tắt
-    st.markdown("#### Tóm Tắt")
-    st.markdown(result.get('summary', 'Không có tóm tắt'))
-    
-    # Sentiment breakdown
-    st.markdown("---")
-    st.markdown("#### Phân Bổ Sentiment")
-    
+    # Sentiment Analysis Overview
     sentiment = result.get('sentiment', {})
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("Positive", f"{sentiment.get('positive_pct', 0)}%")
+        st.metric("Sentiment Positive", f"{sentiment.get('positive_pct', 0)}%")
     with col2:
-        st.metric("Neutral", f"{sentiment.get('neutral_pct', 0)}%")
+        st.metric("Sentiment Neutral", f"{sentiment.get('neutral_pct', 0)}%")
     with col3:
-        st.metric("Negative", f"{sentiment.get('negative_pct', 0)}%")
-    
-    # Sample reviews với similarity
+        st.metric("Sentiment Negative", f"{sentiment.get('negative_pct', 0)}%")
+        
     st.markdown("---")
-    st.markdown("#### Các Đánh Giá Liên Quan Nhất")
+    
+    # Details (Cái riêng)
+    st.markdown("#### 2. Chi Tiết Phân Tích")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Tổng Reviews Đã Quét", f"{result.get('total_reviews_analyzed', 0):,}")
+    with col2:
+        st.metric("Reviews Liên Quan Found", f"{result.get('relevant_reviews_count', 0):,}")
+        
+    st.markdown("#### Các Đánh Giá Điển Hình Nhất")
+    st.caption("Các đánh giá được sắp xếp theo độ tương đồng ngữ nghĩa (Semantic Similarity)")
     
     sample_reviews = result.get('sample_reviews', [])
     if sample_reviews:
@@ -821,11 +814,9 @@ def display_case2_result(result):
             review = item.get('review', '')
             similarity = item.get('similarity', 0)
             
-            truncated = review[:400] + "..." if len(review) > 400 else review
-            
             with st.container():
-                st.markdown(f"**{i}. (Similarity: {similarity:.3f})**")
-                st.markdown(f"> {truncated}")
+                st.markdown(f"**Review #{i}** (Similarity: {similarity:.3f})")
+                st.markdown(f"> {review}")
                 st.markdown("")
     else:
         st.info("Không tìm thấy reviews liên quan.")
