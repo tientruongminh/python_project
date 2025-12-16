@@ -5,7 +5,7 @@ A comprehensive data analysis pipeline for Walmart product reviews with OOP arch
 ##  Features
 
 - **Data Loading**: Automatic loading from Kaggle with column normalization
-- **Preprocessing**: Date shifting, duplicate URL merging, missing value handling
+- **Preprocessing**:  duplicate URL merging, missing value handling
 - **Web Scraping**: Selenium-based scraper for Walmart product pages
 - **AI Clustering**: Product categorization using Google Gemini API
 - **Sentiment Analysis**: Aspect-based sentiment analysis of reviews
@@ -15,19 +15,66 @@ A comprehensive data analysis pipeline for Walmart product reviews with OOP arch
 
 ```
 python_project/
+├── .streamlit/
+│   └── config.toml                          # Streamlit configuration
+│
+├── data/
+│   ├── raw_data.csv                         # Raw Walmart reviews dataset
+│   ├── processed_data.csv                   # Cleaned dataset (version 1)
+│   └── processed_data_v2.csv                # Cleaned dataset (version 2)
+│
+├── outputs/
+│   ├── analysis_report.md                   # Generated business insights report
+│   ├── clustered_products.csv               # Products with assigned categories
+│   ├── sentiment_analysis.csv               # Aspect-based sentiment results
+│   └── pipeline.log                         # Pipeline execution logs
+│
 ├── src/
-│   ├── config/          # Configuration settings
-│   ├── data/            # Data loading & preprocessing
-│   ├── scrapers/        # Web scraping modules
-│   ├── clustering/      # Gemini AI clustering
-│   ├── analysis/        # Sentiment & insight analysis
-│   └── utils/           # Helper utilities
-├── data/                # Raw & processed data
-├── outputs/             # Analysis results
-├── notebooks/           # Jupyter notebooks
-├── tests/               # Unit tests
-├── main.py              # Entry point
-└── requirements.txt
+│   ├── __init__.py                          # Package initializer
+│   │
+│   ├── analysis/
+│   │   ├── __init__.py                      # Analysis module init
+│   │   ├── aspect_extractor.py              # Extract aspects from reviews
+│   │   ├── aspect_summarizer.py             # Summarize aspects per category
+│   │   ├── evaluator.py                     # Model evaluation metrics
+│   │   ├── insight_generator.py             # Generate business insights
+│   │   ├── rag_pipeline.py                  # RAG-based Q&A pipeline
+│   │   ├── sentiment_analyzer.py            # Sentiment classification
+│   │   └── topic_modeler.py                 # Topic modeling with LDA/BERTopic
+│   │
+│   ├── clustering/
+│   │   ├── __init__.py                      # Clustering module init
+│   │   ├── gemini_client.py                 # Google Gemini API client
+│   │   └── product_clusterer.py             # Product categorization logic
+│   │
+│   ├── config/
+│   │   ├── __init__.py                      # Config module init
+│   │   └── settings.py                      # Environment & pipeline settings
+│   │
+│   ├── data/
+│   │   ├── __init__.py                      # Data module init
+│   │   ├── loader.py                        # Kaggle data loader
+│   │   ├── preprocessor.py                  # Data cleaning & transformation
+│   │   └── imputer.py                       # Missing value imputation
+│   │
+│   ├── scrapers/
+│   │   ├── __init__.py                      # Scrapers module init
+│   │   ├── base_scraper.py                  # Abstract base scraper class
+│   │   └── walmart_scraper.py               # Walmart product page scraper
+│   │
+│   └── utils/
+│       ├── __init__.py                      # Utils module init
+│       └── helpers.py                       # Common helper functions
+│
+├── tests/
+│   ├── __init__.py                          # Tests module init
+│   └── test_preprocessor.py                 # Preprocessor tests
+│
+├── .env                                     # Environment variables (API keys)
+├── .gitignore                               # Git ignore rules
+├── main.py                                  # Pipeline entry point (CLI)
+├── streamlit_app.py                         # Interactive dashboard
+└── requirements.txt                         # Python dependencies
 ```
 
 ##  Installation

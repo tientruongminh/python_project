@@ -265,3 +265,90 @@ Aspects:"""
                 aspects[aspect] = sentiment
                 
         return aspects
+            aspects[aspect] = sentiment
+                
+        return aspects
+
+    def infer_product_info_batch(
+        self,
+        reviews: List[str]
+    ) -> List[Dict[str, Any]]:
+        """
+        Infer product title and rating from reviews in batch.
+        
+        Args:
+            reviews: List of review texts
+            
+        Returns:
+            List of dicts with 'title' and 'rating'
+        """
+        if not self.is_available:
+            return [{'title': None, 'rating': None} for _ in reviews]
+            
+        logger.info(f"Inferring info for {len(reviews)} reviews...")
+        
+        results = []
+        batch_size = 10  # Smaller batch size for complex inference
+        
+        from src.utils.helpers import clean_text
+        
+        for i in range(0, len(reviews), batch_size):
+            batch_reviews = reviews[i:i + batch_size]
+            batch_results = self._infer_info_batch_process(batch_reviews)
+            results.extend(batch_results)
+            
+        return results
+
+    def _infer_info_batch_process(self, reviews: List[str]) -> List[Dict[str, Any]]:
+        """Process a single batch for inference."""
+        reviews_formatted = []
+        for idx, rev in enumerate(reviews):
+            # Truncate to save tokens but keep enough context
+            clean_rev = rev[:500].replace('\n', ' ')
+            reviews_formatted.append(f"Review {idx+1}: {clean_rev}")
+            
+        reviews_block = "\n".join(reviews_formatted)
+        
+        prompt = f"""Analyze the following product reviews. For each review, infer the likely Product Name (Title) and a Rating (1-5 stars) based on the sentiment.
+
+Reviews:
+{reviews_block}
+
+Return a valid JSON list of objects. Each object must have "title" (string) and "rating" (integer 1-5).
+If title cannot be inferred, use "Generic Product".
+If rating cannot be inferred, use 3.
+
+Format:
+[
+  {{"title": "Product A", "rating": 5}},
+  {{"title": "Product B", "rating": 1}}
+]
+"""
+        
+        try:
+            response = self.generate(prompt, max_tokens=1000)
+            import json
+            import re
+            
+            # Extract JSON block
+            match = re.search(r'\[.*\]', response, re.DOTALL)
+            if match:
+                json_str = match.group(0)
+                data = json.loads(json_str)
+                
+                # Validate length
+                if len(data) != len(reviews):
+                    logger.warning(f"Inference count mismatch: got {len(data)}, expected {len(reviews)}")
+                    # Pad or truncate
+                    if len(data) < len(reviews):
+                        data.extend([{'title': 'Unknown', 'rating': 3}] * (len(reviews) - len(data)))
+                    else:
+                        data = data[:len(reviews)]
+                return data
+            else:
+                logger.warning("Could not parse JSON from Gemini response")
+                return [{'title': None, 'rating': None} for _ in reviews]
+                
+        except Exception as e:
+            logger.error(f"Batch inference failed: {e}")
+            return [{'title': None, 'rating': None} for _ in reviews]

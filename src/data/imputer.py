@@ -299,7 +299,10 @@ class DataImputer:
         """
         Fill missing values using LLM inference.
         
-        Uses Gemini to infer missing data from context.
+        Uses Gemini to infer missing data from context (reviews).
+        Target: 
+        - Title: 'Unknown Product' or NaN
+        - Rating: 0 or NaN
         
         Returns:
             DataFrame with LLM-inferred values
@@ -319,63 +322,66 @@ class DataImputer:
                 logger.warning("Gemini client not available")
                 return self.df
             
-            # Find rows with missing title but have review or pageurl
+            # Identify target rows
+            # 1. Missing Title
+            mask_title = pd.Series([False] * len(self.df), index=self.df.index)
             if 'title' in self.df.columns:
-                missing_title_mask = self.df['title'].isna() | (self.df['title'] == 'Unknown Product')
-                has_context = (
-                    self.df['review'].notna() | 
-                    self.df['pageurl'].notna()
-                )
-                rows_to_infer = self.df[missing_title_mask & has_context]
+                mask_title = self.df['title'].isna() | (self.df['title'] == 'Unknown Product')
+            
+            # 2. Missing/Zero Rating
+            mask_rating = pd.Series([False] * len(self.df), index=self.df.index)
+            if 'rating' in self.df.columns:
+                mask_rating = self.df['rating'].isna() | (self.df['rating'] == 0)
                 
-                if len(rows_to_infer) > 0:
-                    logger.info(f"Inferring title for {len(rows_to_infer)} rows...")
-                    
-                    # Batch inference (sample for efficiency)
-                    sample_size = min(50, len(rows_to_infer))
-                    sample_indices = rows_to_infer.sample(sample_size).index
-                    
-                    filled_count = 0
-                    for idx in tqdm(sample_indices, desc="LLM Inference"):
-                        row = self.df.loc[idx]
+            # Combine: Rows that need EITHER title OR rating fix, AND have review text
+            mask_needs_infer = (mask_title | mask_rating)
+            if 'review' in self.df.columns:
+                 mask_needs_infer &= self.df['review'].notna() & (self.df['review'].str.len() > 10)
+            else:
+                mask_needs_infer = pd.Series([False] * len(self.df))
+
+            rows_to_infer = self.df[mask_needs_infer]
+            
+            if len(rows_to_infer) == 0:
+                logger.info("No rows require LLM inference")
+                return self.df
+                
+            logger.info(f"Inferring data for {len(rows_to_infer)} rows (Title/Rating)...")
+            
+            # Prepare batches
+            indices = rows_to_infer.index.tolist()
+            reviews = rows_to_infer['review'].tolist()
+            
+            # Infer in batches using new method
+            inferred_results = client.infer_product_info_batch(reviews)
+            
+            # Update DataFrame
+            filled_title = 0
+            filled_rating = 0
+            
+            for idx, result in zip(indices, inferred_results):
+                # Update title if needed
+                current_title = self.df.at[idx, 'title'] if 'title' in self.df.columns else None
+                if result.get('title') and (pd.isna(current_title) or current_title == 'Unknown Product'):
+                     if 'title' in self.df.columns:
+                        self.df.at[idx, 'title'] = result['title']
+                        filled_title += 1
+                
+                # Update rating if needed
+                current_rating = self.df.at[idx, 'rating'] if 'rating' in self.df.columns else 0
+                if result.get('rating') and (pd.isna(current_rating) or current_rating == 0):
+                    if 'rating' in self.df.columns:
+                        self.df.at[idx, 'rating'] = float(result['rating'])
+                        filled_rating += 1
                         
-                        # Build context from URL
-                        context_parts = []
-                        if pd.notna(row.get('pageurl')):
-                            # Extract product name from URL
-                            url = str(row['pageurl'])
-                            if '/ip/' in url:
-                                parts = url.split('/ip/')[-1].split('/')
-                                if parts:
-                                    product_slug = parts[0].replace('-', ' ')
-                                    context_parts.append(f"Product URL slug: {product_slug}")
-                                    
-                        if pd.notna(row.get('review')):
-                            review_snippet = str(row['review'])[:200]
-                            context_parts.append(f"Review: {review_snippet}")
-                            
-                        if context_parts:
-                            prompt = (
-                                f"Based on this context, what is the product name? "
-                                f"Return ONLY the product name, nothing else.\n\n"
-                                f"{' | '.join(context_parts)}"
-                            )
-                            
-                            try:
-                                title = client.generate(prompt, max_tokens=50)
-                                if title and len(title) < 100 and title.lower() != 'unknown':
-                                    self.df.at[idx, 'title'] = title.strip()
-                                    filled_count += 1
-                            except Exception as e:
-                                logger.debug(f"LLM inference failed for idx {idx}: {e}")
-                                continue
-                                
-                    logger.info(f"Filled {filled_count} titles via LLM inference")
+            logger.info(f"LLM Inference Results: Filled {filled_title} titles, {filled_rating} ratings")
                         
         except ImportError:
             logger.warning("GeminiClient not available")
         except Exception as e:
             logger.error(f"LLM imputation failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             
         return self.df
         
